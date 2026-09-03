@@ -4,6 +4,28 @@ Những chỗ cố ý để lại chưa hoàn chỉnh. Khi xử lý xong thì ch
 
 ---
 
+## ISSUE-007 — Phần còn lại của Phase 1 chưa làm
+
+**Từ:** Phase 1 · **Nơi:** `crates/db/`
+
+Đã xong: schema với migration, hàng đợi `ready_at` với guard fingerprint, chuyển đổi row, phân loại lỗi, và test khẳng định truy vấn dùng index.
+
+Chưa làm: DB actor chạy trên thread riêng sở hữu `Connection`, hàm `apply` thực hiện CAS trong một transaction, và `MemoryRepository` trong `nasdedup-core`.
+
+Hai bản cài đặt `Repository` (SQLite và trong bộ nhớ) phải có **cùng ngữ nghĩa**. Nếu làm lệch nhau, test pipeline sẽ xanh trong khi bản thật sai. Cân nhắc viết một bộ test dùng chung chạy trên cả hai.
+
+---
+
+## ISSUE-006 — Chưa có crate `nasdedup-api` và phần giao diện
+
+**Từ:** sau vòng thiết kế · **Tài liệu:** `docs/design/06`
+
+Thiết kế đã chốt nhưng chưa có dòng code nào: crate hợp đồng `nasdedup-api` dùng chung giữa daemon và app, HTTP server trong daemon, ứng dụng Tauri, và cơ chế cập nhật.
+
+Bản chốt mâu thuẫn yêu cầu vài thứ phải làm **trước** khi viết các phần này, nếu không sẽ phải sửa lại: danh sách trắng trường cấu hình ghi được, trường `windows_unc` bắt buộc cho root remote, và bảng `group_notes`.
+
+---
+
 ## ISSUE-005 — `StdFs` dùng `mtime` thay cho `ctime`
 
 **Từ:** Phase 0 · **Nơi:** `crates/core/src/fs.rs`

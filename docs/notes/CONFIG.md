@@ -41,6 +41,10 @@ Cross-compile từ Windows sang `x86_64-unknown-linux-musl` cần toolchain ph�
 
 **Hệ quả cần nhớ.** Lỗi chỉ xuất hiện khi build musl (ví dụ `libc::ioctl` nhận `c_int` trên musl nhưng `c_ulong` trên glibc, xem `SPEC-NOTES.md`) sẽ **không** lộ ra khi làm việc trên máy dev. Phải đợi CI. Khi bắt đầu Phase 5 (phần ioctl), cân nhắc cài `cross` để rút ngắn vòng phản hồi.
 
+**Cập nhật 2026-09-03.** CI đã build thành công cả `x86_64` lẫn `aarch64` musl và kiểm tra binary thực sự tĩnh bằng `readelf`. Binary được lưu làm artifact 14 ngày. Máy dev vẫn không kiểm chứng được, nhưng giờ đã có nguồn xác nhận.
+
+Máy dev không có zig, clang, docker hay WSL. `cargo clippy --target x86_64-unknown-linux-gnu` chạy được cho crate thuần Rust (clippy không cần liên kết) nhưng gãy ở `libsqlite3-sys` vì crate đó cần trình biên dịch C cho đích. Vẫn dùng được để thu hẹp phạm vi, xem `CI.md`.
+
 ---
 
 ## CFG-003 — Workspace không build được nếu thiếu `Cargo.toml` của một thành viên
