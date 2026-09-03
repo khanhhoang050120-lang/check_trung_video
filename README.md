@@ -2,7 +2,15 @@
 
 Daemon Rust phát hiện video trùng lặp trên NAS và gộp dung lượng vật lý bằng cơ chế chia sẻ extent của filesystem, **không thay đổi bất kỳ byte nội dung, tên, quyền hay metadata nào** mà người dùng nhìn thấy.
 
-Bản đặc tả đầy đủ: [BẢN ĐẶC TẢ KỸ THUẬT (PRD & TECHNICAL SPEC).md](BẢN%20ĐẶC%20TẢ%20KỸ%20THUẬT%20(PRD%20%26%20TECHNICAL%20SPEC).md). Mọi quyết định thiết kế đều tham chiếu số mục trong tài liệu đó.
+## Tài liệu
+
+| Tài liệu | Nội dung |
+| :--- | :--- |
+| [Bản đặc tả kỹ thuật](BẢN%20ĐẶC%20TẢ%20KỸ%20THUẬT%20(PRD%20%26%20TECHNICAL%20SPEC).md) | Phần lõi dedup: thuật toán, schema, state machine, kế hoạch 7 phase |
+| [Thiết kế giao diện và phát hành](docs/design/) | UI/UX, API điều khiển, cập nhật tự động, CI/CD |
+| [Sổ tay kỹ thuật](docs/notes/) | Lỗi đã gặp, quyết định kiến trúc, rủi ro, danh sách kiểm tra |
+
+Mọi quyết định đều tham chiếu số mục trong bản đặc tả.
 
 ## Nguyên tắc an toàn
 
@@ -26,12 +34,20 @@ Phase 0 (khung dự án) đã xong. Các phase tiếp theo theo mục 11 của b
 | Phase | Nội dung | Trạng thái |
 | :--- | :--- | :--- |
 | 0 | Workspace, kiểu dữ liệu, cấu hình, trait, CLI | Xong |
-| 1 | SQLite, state machine, hàng đợi | Chưa |
+| 1 | SQLite, state machine, hàng đợi | Đang làm |
 | 2 | Bộ lọc, sparse hash, pipeline dry-run | Chưa |
 | 3 | Linux I/O, throttle, chạy report-only | Chưa |
 | 4 | Watcher và reconcile | Chưa |
 | 5 | Verify và action thật | Chưa |
 | 6 | Hardening, đóng gói, quan sát | Chưa |
+
+## Giao diện
+
+Ứng dụng desktop cài trên máy Windows, kết nối tới daemon qua mạng nội bộ. Không phải đăng nhập mỗi lần: ghép cặp một lần bằng mã 8 ký tự.
+
+Nguyên tắc quan trọng nhất của giao diện: **không có nút Xóa ở bất kỳ đâu**. Phần mềm gộp dung lượng chứ không dọn file. Với bản trùng nằm trên máy Windows, nó chỉ báo cáo và mở Explorer tới đúng vị trí để bạn tự quyết định.
+
+Chi tiết ở [docs/design/](docs/design/).
 
 ## Cấu trúc
 
@@ -40,6 +56,8 @@ crates/core      nasdedup-core    mô hình, cấu hình, trait, pipeline thuầ
 crates/db        nasdedup-db      SQLite và DB actor
 crates/linux     nasdedup-linux   syscall Linux: ioctl, lease, inotify, throttle
 crates/daemon    nasdedup         binary: CLI, scheduler, control socket
+docs/design      tài liệu thiết kế giao diện và phát hành
+docs/notes       sổ tay kỹ thuật của dự án
 ```
 
 `nasdedup-core` build và test được trên Windows để phát triển không cần NAS.

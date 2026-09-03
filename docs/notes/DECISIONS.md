@@ -87,3 +87,63 @@ Quyết định: việc share extent chỉ xảy ra sau khi kernel so từng byt
 Bản đặc tả v1 dùng `sleep(15 phút)` ngay trong worker, cho throughput 4 file mỗi giờ. Thay bằng cột `ready_at` trên chính bảng `files`.
 
 Lợi ích kép: sống sót qua restart, và gộp nhiều sự kiện của cùng một inode thành một dòng thay vì xếp hàng nhiều lần.
+
+---
+
+## DEC-013 — App là ống dẫn byte khi cập nhật daemon
+
+**Ngày:** 2026-09-03 · **Thiết kế:** `docs/design/04`, chốt mâu thuẫn mục 3
+
+Ba phương án được cân nhắc: daemon tự tải từ internet, app tải rồi đẩy sang NAS, hoặc chỉ báo rồi người dùng tự chạy lệnh.
+
+Chọn phương án giữa. App tải bản mới từ GitHub, đẩy sang NAS qua mạng nội bộ; daemon xác minh lại chữ ký và mã băm hoàn toàn độc lập.
+
+**Đã loại:** daemon tự tải (buộc máy chạy quyền cao mở kết nối ra internet và cần kho chứng chỉ trong binary tĩnh); chỉ báo rồi copy lệnh (phá lời hứa "bấm một nút" của yêu cầu).
+
+**Hệ quả.** Daemon không bao giờ gọi ra ngoài. Đường cập nhật thủ công từ file dùng **chung** mã với đường tự động, để không có nhánh ít được kiểm thử.
+
+---
+
+## DEC-012 — Ba bậc bằng chứng cho nhóm trùng chéo máy
+
+**Ngày:** 2026-09-03 · **Thiết kế:** chốt mâu thuẫn mục 2
+
+Vì mặc định `remote_verify = "hash_only"`, không cặp chéo máy nào từng được so từng byte. Một nhóm thiết kế muốn chặn hẳn việc sao chép đường dẫn khi chưa so byte; nhóm khác muốn mở ngay khi có mã băm.
+
+Chốt ba bậc: bậc 1 trùng vân tay thì không cho sao chép đường dẫn; bậc 2 trùng mã băm toàn bộ thì cho kèm nhãn ghi rõ "chưa so từng byte"; bậc 3 chỉ đạt khi người dùng chủ động yêu cầu so byte.
+
+**Vì sao quan trọng.** Đây là con đường duy nhất trong sản phẩm dẫn tới việc người dùng **tự tay xóa** một file. Nhãn phải nói đúng mức bằng chứng đang có.
+
+---
+
+## DEC-011 — Danh sách trắng cho các trường cấu hình ghi được qua API
+
+**Ngày:** 2026-09-03 · **Thiết kế:** chốt mâu thuẫn mục 5
+
+Thiết kế API ban đầu dùng danh sách đen. Mọi trường thêm về sau mặc nhiên ghi được qua mạng, trong đó có đường chạy lệnh ngoài và đường ghi file tùy ý dưới quyền cao.
+
+Đảo thành danh sách trắng, kèm test đối chiếu với toàn bộ trường của `Config`: trường mới không khai tường minh thì bị chặn và test đỏ.
+
+**Nguyên tắc rút ra.** Với bề mặt bảo mật, luôn dùng danh sách trắng. Danh sách đen chỉ đúng tại thời điểm viết ra nó.
+
+---
+
+## DEC-010 — Không có nút Xóa ở bất kỳ đâu trong giao diện
+
+**Ngày:** 2026-09-03 · **Thiết kế:** `docs/design/01`, `docs/design/02`
+
+Kể cả với bản trùng nằm trên máy Windows mà phần mềm về mặt kỹ thuật xóa được nếu mount cho ghi. Giao diện chỉ báo cáo, mở Explorer tới đúng vị trí, và cho đánh dấu đã xử lý.
+
+**Vì sao.** Phần mềm này gộp dung lượng chứ không dọn file. Một nút Xóa sẽ khiến người dùng hiểu sai bản chất sản phẩm, và biến mọi lỗi nhận diện trùng lặp thành mất dữ liệu.
+
+---
+
+## DEC-009 — Bắt buộc khai đường dẫn UNC cho thư mục trên máy Windows
+
+**Ngày:** 2026-09-03 · **Thiết kế:** chốt mâu thuẫn mục 1
+
+App chạy trên Windows nhưng daemon chỉ biết đường dẫn phía NAS. Nếu app tự suy ra đường dẫn Windows bằng cách cắt tiền tố rồi ghép ổ đĩa, một lần đoán sai sẽ dẫn người dùng tới thư mục khác và họ xóa nhầm file.
+
+Bắt buộc khai `windows_unc` trong cấu hình root remote. Thiếu thì ẩn hẳn nút mở Explorer. Trước khi mở, app đối chiếu kích thước và thời gian sửa với giá trị API trả về; lệch thì chặn.
+
+**Nguyên tắc rút ra.** Không bao giờ suy đoán đường dẫn trên máy khác. Bắt khai báo tường minh, và nếu thiếu thì ẩn tính năng thay vì đoán.
