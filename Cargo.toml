@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/nasdedup/nasdedup"
+repository = "https://github.com/khanhhoang050120-lang/check_trung_video"
 
 [workspace.dependencies]
 nasdedup-core = { path = "crates/core" }
