@@ -1,0 +1,58 @@
+# Kết quả biên dịch của Rust (rất lớn, dựng lại được từ mã nguồn)
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock được commit vì đây là ứng dụng, không phải thư viện:
+# cần dựng lại đúng phiên bản thư viện đã kiểm thử.
+
+# Cơ sở dữ liệu và trạng thái lúc chạy
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+/state/
+/run/
+
+# Cấu hình thật của từng người dùng.
+# Bản mẫu nằm ở examples/config.example.toml và vẫn được commit.
+/config.toml
+/nasdedup.toml
+*.local.toml
+
+# Bí mật: không bao giờ commit
+*.key
+*.pem
+*.cred
+credentials*
+.env
+.env.*
+!.env.example
+
+# File video dùng để kiểm thử (dung lượng lớn)
+/tests/fixtures/*.mp4
+/tests/fixtures/*.mkv
+/tests/fixtures/*.mov
+/tests/fixtures/*.bin
+/tests/fixtures/*.img
+
+# Log
+*.log
+/logs/
+
+# Ứng dụng desktop (thêm ở phase sau)
+node_modules/
+dist/
+.svelte-kit/
+/app/src-tauri/target/
+/app/src-tauri/gen/
+
+# Hệ điều hành và trình soạn thảo
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~

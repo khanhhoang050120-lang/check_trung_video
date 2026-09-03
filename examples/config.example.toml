@@ -1,0 +1,85 @@
+# Cấu hình mẫu cho môi trường thực tế (bản đặc tả mục 1.5 và mục 6):
+#
+#   NAS Linux      192.168.1.213   chứa video, daemon chạy ở đây, dedup thật.
+#   Máy Windows    192.168.1.214   thư mục chia sẻ SMB, CHỈ được quét và báo cáo.
+#
+# Trước khi chạy, mount share của máy Windows trên NAS, ví dụ trong /etc/fstab:
+#
+#   //192.168.1.214/Video  /mnt/win214  cifs  credentials=/etc/nasdedup/win214.cred,ro,uid=nasdedup,iocharset=utf8,vers=3.0,_netdev  0 0
+#
+# Lưu ý `ro` trong tùy chọn mount: daemon không bao giờ ghi lên máy Windows, và
+# mount read-only là lớp bảo vệ thứ hai ở mức hệ điều hành.
+
+[general]
+# Bắt đầu bằng "report" để xem daemon tìm thấy gì trước khi cho phép nó thay đổi
+# bất cứ thứ gì. Chỉ đổi sang "dedup" sau khi đã xem `nasdedup report`.
+mode = "report"
+
+# Khi mode = "dedup", chỉ các đường dẫn này bị tác động. Phải nằm trên root cục bộ.
+allow_paths = []
+
+# Chế độ report có so từng byte để đo tỉ lệ báo trùng nhầm của sparse hash.
+report_verify = true
+
+state_dir = "/var/lib/nasdedup"
+
+# synology | qnap | truenas | unraid | omv | generic
+nas_flavor = "generic"
+
+[watch]
+# Root cục bộ trên NAS: nơi duy nhất có thể gộp dung lượng thật.
+roots = ["/volume1/video"]
+
+min_size = "64MiB"
+
+# Root remote: thư mục chia sẻ của máy Windows đã mount sẵn.
+# Daemon chỉ đọc, chỉ báo cáo; không ghi, không xóa, không đổi tên.
+[[watch.remote_roots]]
+path = "/mnt/win214"
+label = "windows-214"
+
+[policy]
+# owner | share | same_domain. Cặp có một phía remote không bị lọc theo owner
+# vì SMB không cấp uid đáng tin cậy.
+scope = "owner"
+
+# hash_only | full. Với cặp chéo máy, "hash_only" đọc mỗi file một lần và so
+# BLAKE3 thay vì kéo 2×dung lượng qua mạng.
+remote_verify = "hash_only"
+
+max_size_group = 50
+verify_max_size = "0"
+
+[timing]
+settle_delay = "15m"
+
+# Các bước nặng chỉ chạy trong khung giờ này. Để rỗng nếu muốn chạy mọi lúc.
+heavy_windows = ["01:00-06:00"]
+timezone = "Asia/Ho_Chi_Minh"
+
+reconcile_interval = "6h"
+presence_interval = "7d"
+max_wait = "6h"
+
+# Root remote không có inotify nên chỉ được quét theo chu kỳ này.
+remote_scan_interval = "1h"
+remote_heavy_only = true
+
+[io]
+read_rate = "40MiB"
+read_burst = "64MiB"
+
+# Đọc qua mạng chậm hơn và chiếm băng thông của người khác.
+remote_read_rate = "20MiB"
+
+busy_threshold_pct = 30
+
+[hash]
+# Đổi hai giá trị này sau khi đã có dữ liệu sẽ cần `nasdedup db rebuild`.
+chunks = 16
+chunk_len = "1MiB"
+
+[log]
+level = "info"
+format = "text"
+file = "/var/log/nasdedup/nasdedup.log"

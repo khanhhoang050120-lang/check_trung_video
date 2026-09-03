@@ -1,0 +1,23 @@
+# Chuẩn hóa kết thúc dòng: kho lưu LF, máy Windows tự đổi khi checkout.
+# Cần thiết vì daemon build trên Linux còn máy phát triển là Windows.
+* text=auto eol=lf
+
+# File shell và YAML bắt buộc LF, nếu không script sẽ lỗi trên Linux.
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Giữ nguyên byte cho file nhị phân.
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.mp4   binary
+*.mkv   binary
+*.bin   binary
+
+# Cargo.lock hay bị xung đột; hiển thị gọn hơn khi diff.
+Cargo.lock linguist-generated=true
+
+# Không tính tài liệu vào thống kê ngôn ngữ của kho.
+docs/**       linguist-documentation
+_archive/**   linguist-documentation

@@ -1,0 +1,21 @@
+[package]
+name = "nasdedup-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "SQLite storage and DB actor for nasdedup"
+
+[lints]
+workspace = true
+
+[dependencies]
+nasdedup-core.workspace = true
+crossbeam-channel.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite_migration = "1"
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

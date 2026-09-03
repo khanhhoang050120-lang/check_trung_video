@@ -1,0 +1,25 @@
+[package]
+name = "nasdedup-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Linux syscall layer for nasdedup: FIDEDUPERANGE, lease, inotify, throttling"
+
+[lints]
+workspace = true
+
+[dependencies]
+nasdedup-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+rustix = { version = "1", features = ["fs", "process", "thread"] }
+linux-raw-sys = { version = "0.9", features = ["general", "ioctl"] }
+notify = "8.2"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,21 @@
+[package]
+name = "nasdedup-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Core model, config, traits and pure pipeline logic for nasdedup (no OS-specific code)"
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3.workspace = true
+globset.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest = "1"
