@@ -83,7 +83,8 @@ fn cmd_config(path: &Path, check_only: bool) -> Result<()> {
     }
     if check_only {
         println!(
-            "cấu hình hợp lệ ({} root cục bộ, {} root remote)",
+            "cấu hình hợp lệ trên {} ({} root cục bộ, {} root remote)",
+            platform::platform_name(),
             cfg.watch.roots.len(),
             cfg.watch.remote_roots.len()
         );
