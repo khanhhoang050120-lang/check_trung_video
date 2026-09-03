@@ -18,6 +18,20 @@ Cả ba phải xanh. Ngoài ra:
 - [ ] Comment giải thích **vì sao**, không mô tả lại code đang làm gì.
 - [ ] Test mới có tên tiếng Việt mô tả hành vi, không phải `test_1`.
 
+## Sau khi đẩy code lên GitHub
+
+- [ ] Kiểm tra kết quả CI bằng **API**, không phải bằng cách đọc trang web:
+
+  ```bash
+  curl -s "https://api.github.com/repos/khanhhoang050120-lang/check_trung_video/actions/runs?per_page=5" \
+    | python -c "import sys,json; [print(r['run_number'], r['status'], r['conclusion']) for r in json.load(sys.stdin)['workflow_runs']]"
+  ```
+
+  Trường `conclusion` phải là `success`. Xem BUG-007 để biết vì sao không tin bản tóm tắt trang web.
+
+- [ ] Thời gian chạy có hợp lý không? Xong quá nhanh thường nghĩa là một nhóm việc đã bị bỏ qua hoặc gãy sớm.
+- [ ] Nếu đỏ, xem từng nhóm việc qua `runs/<id>/jobs` để biết bước nào gãy trước khi đoán nguyên nhân.
+
 ## Trước khi chuyển sang phase tiếp theo
 
 - [ ] Toàn bộ tiêu chí hoàn thành của phase trong mục 11 của bản đặc tả đã đạt, từng mục một.

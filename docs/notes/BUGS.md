@@ -4,6 +4,54 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-007 — Tin vào bản tóm tắt trang web thay vì dữ liệu chính thức
+
+**Ngày:** 2026-09-03 · **Phase:** 1 · **Mức độ:** cao, vì đã báo sai cho người dùng
+
+**Chuyện gì xảy ra.** Sau khi đẩy code lên GitHub, tôi đọc trang Actions bằng công cụ tóm tắt trang web. Nó báo hai lần chạy **thành công**. Tôi báo lại với người dùng là "CI xanh".
+
+Thực tế cả hai đều **thất bại**. Công cụ tóm tắt đọc nhầm biểu tượng trạng thái trên trang.
+
+**Điều duy nhất giúp phát hiện.** Con số thời gian không hợp lý: 2 phút 24 giây là quá nhanh cho việc biên dịch chéo hai kiến trúc musl. Khi hỏi API chính thức thì thấy `"conclusion": "failure"`.
+
+**Bài học.** Với trạng thái nhị phân quan trọng như xanh hay đỏ, phải lấy từ nguồn cho dữ liệu có cấu trúc:
+
+```bash
+curl -s "https://api.github.com/repos/<chủ>/<kho>/actions/runs?per_page=5" \
+  | python -c "import sys,json; [print(r['run_number'], r['status'], r['conclusion']) for r in json.load(sys.stdin)['workflow_runs']]"
+```
+
+API Actions của kho công khai đọc được mà không cần xác thực. Bản tóm tắt do mô hình đọc trang chỉ dùng để định hướng, không dùng để kết luận.
+
+**Bài học thứ hai.** Con số bất thường là tín hiệu đáng tin hơn lời khẳng định. Nếu một việc xong nhanh hơn nhiều so với dự kiến, hãy nghi ngờ trước khi mừng.
+
+---
+
+## BUG-006 — `RUSTFLAGS: -D warnings` trong CI làm gãy build vì siết cả thư viện của người khác
+
+**Ngày:** 2026-09-03 · **Phase:** 1 · **Nơi:** `.github/workflows/ci.yml`
+
+**Triệu chứng.** Nhóm việc Windows xanh, nhóm Linux đỏ ở bước clippy, nhóm build musl đỏ ở bước build. Trong khi trên máy dev, `cargo clippy --workspace --all-targets -- -D warnings` hoàn toàn sạch.
+
+**Nguyên nhân gốc.** File workflow đặt:
+
+```yaml
+env:
+  RUSTFLAGS: -D warnings
+```
+
+Biến này áp cho **mọi** crate được biên dịch, bao gồm cả thư viện bên thứ ba. Nó khác hẳn `cargo clippy -- -D warnings`, vốn chỉ áp cho crate của workspace.
+
+Vì sao chỉ Linux gãy: `nasdedup-linux` khai các thư viện chỉ dành cho Linux (`libc`, `rustix`, `linux-raw-sys`, `notify`, `walkdir`). Chúng không được biên dịch trên Windows, nên một cảnh báo bên trong chúng chỉ làm gãy Linux.
+
+**Cách sửa.** Bỏ hẳn `RUSTFLAGS` khỏi `env`, giữ `-D warnings` truyền trực tiếp cho clippy.
+
+**Bài học.** `RUSTFLAGS` và `cargo clippy -- <flag>` trông giống nhau nhưng phạm vi khác nhau hoàn toàn. Đặt lint nghiêm ngặt vào `RUSTFLAGS` biến sức khỏe build của mình thành con tin của mã người khác: chỉ cần một thư viện phát cảnh báo trên phiên bản trình biên dịch mới là CI đỏ dù mã của mình không đổi một dòng.
+
+**Sửa kèm.** Thêm bước kiểm tra binary thực sự tĩnh bằng `readelf`. Trước đó CI chỉ kiểm tra build thành công, mà build thành công vẫn có thể ra binary phụ thuộc động và không chạy nổi trên NAS.
+
+---
+
 ## BUG-005 — Hiểu sai chữ `SCAN` trong `EXPLAIN QUERY PLAN` của SQLite
 
 **Ngày:** 2026-09-03 · **Phase:** 1 · **Nơi:** `crates/db/tests/query_plan.rs`
