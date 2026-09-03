@@ -15,6 +15,27 @@ for r in json.load(sys.stdin)['workflow_runs']:
 
 Trường quyết định là `conclusion`, phải bằng `success`. **Không** kết luận từ bản tóm tắt trang web: nó đã từng đọc nhầm đỏ thành xanh, xem BUG-007.
 
+### Phân biệt `cancelled` với `failure`
+
+`ci.yml` bật `concurrency` kèm `cancel-in-progress: true`, nên **đẩy một commit mới sẽ hủy lần chạy đang dở của commit trước**. Trạng thái khi đó là `cancelled` với thông điệp:
+
+```text
+Canceling since a higher priority waiting request for CI-refs/heads/main exists
+```
+
+Đây **không** phải lỗi. Nếu đếm `cancelled` là đỏ thì sẽ báo động giả mỗi lần đẩy liên tiếp hai commit. Chỉ `failure` mới là đỏ; `cancelled` nghĩa là "chưa biết, đã bị thay bằng lần chạy mới hơn".
+
+Hệ quả khi làm việc: sau khi đẩy nhiều commit liền nhau, chỉ commit **cuối cùng** có kết quả đầy đủ. Nếu cần chắc chắn một commit giữa là xanh thì đừng đẩy tiếp cho tới khi nó chạy xong.
+
+Cách viết đúng trong script kiểm tra:
+
+```python
+ok = all(c['conclusion'] == 'success' for c in check_runs)   # đúng
+ok = not any(c['conclusion'] != 'success' for c in check_runs)  # sai: hủy cũng bị tính là đỏ
+```
+
+Nói cách khác, phải quyết định trước là coi `cancelled` thuộc nhóm nào, và nói rõ điều đó ra khi báo cáo.
+
 ## Xem nhóm việc nào gãy và ở bước nào
 
 ```bash
