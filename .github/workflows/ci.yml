@@ -5,20 +5,29 @@ on:
     branches: [main]
   pull_request:
 
+# KHÔNG đặt `RUSTFLAGS: -D warnings` ở đây.
+# RUSTFLAGS áp cho cả thư viện bên thứ ba, nên một cảnh báo trong crate của
+# người khác (hoặc từ phiên bản trình biên dịch mới hơn) sẽ làm gãy build dù
+# mã của ta không sai. Thay vào đó truyền `-D warnings` trực tiếp cho clippy,
+# nơi nó chỉ áp cho crate của workspace.
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # Máy dev là Windows: core và db phải test được ở đó (spec NFR-5, 3.5.6).
+  # Máy phát triển là Windows: hai crate không phụ thuộc OS phải test được ở đó
+  # (bản đặc tả NFR-5, mục 3.5.6).
   windows:
-    name: Test trên Windows (core, db)
+    name: Test trên Windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Test
+      - name: Test core và db
         run: cargo test -p nasdedup-core -p nasdedup-db
 
   linux:
@@ -37,10 +46,14 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # Binary phát hành cho NAS là musl tĩnh (bản đặc tả NFR-4).
+  # Không chạy trên pull request vì tốn nhiều phút; chỉ chạy khi đẩy lên main.
   musl:
-    name: Build tĩnh musl (NFR-4)
+    name: Build tĩnh musl
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
     steps:
@@ -49,7 +62,26 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-${{ matrix.target }}
+      # cargo-binstall tải binary dựng sẵn thay vì biên dịch cross từ nguồn,
+      # rút thời gian job từ vài phút xuống vài giây.
+      - uses: cargo-bins/cargo-binstall@main
       - name: Cài cross
-        run: cargo install cross --locked
+        run: cargo binstall --no-confirm cross
       - name: Build
         run: cross build --release --target ${{ matrix.target }} --bin nasdedup
+      - name: Kiểm tra binary là tĩnh
+        run: |
+          f="target/${{ matrix.target }}/release/nasdedup"
+          file "$f"
+          # Binary động sẽ có dòng "interpreter"; binary tĩnh thì không.
+          if readelf -l "$f" | grep -q "interpreter"; then
+            echo "LỖI: binary không tĩnh, sẽ không chạy trên NAS thiếu thư viện"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nasdedup-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/nasdedup
+          retention-days: 14
