@@ -41,10 +41,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Định dạng
         run: cargo fmt --all -- --check
+      # Phát lỗi clippy ra dạng annotation để đọc được ngay trên giao diện
+      # GitHub và qua API, không phải mở log. Log của kho công khai vẫn cần
+      # xác thực mới tải được, nên annotation là kênh chẩn đoán duy nhất.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          set +e
+          out=$(cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            echo "$out" | grep -E "(error|warning)(\[|:)" | head -40 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+          fi
+          exit $code
       - name: Test
-        run: cargo test --workspace
+        run: |
+          set +e
+          out=$(cargo test --workspace 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            echo "$out" | grep -E "^(test .* FAILED|error|thread .* panicked|assertion)" | head -40 \
+              | while IFS= read -r line; do echo "::error::${line}"; done
+          fi
+          exit $code
 
   # Binary phát hành cho NAS là musl tĩnh (bản đặc tả NFR-4).
   # Không chạy trên pull request vì tốn nhiều phút; chỉ chạy khi đẩy lên main.
