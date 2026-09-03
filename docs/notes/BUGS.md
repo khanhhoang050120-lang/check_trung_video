@@ -4,6 +4,31 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-008 — Mã chết chỉ xuất hiện trên một nền tảng
+
+**Ngày:** 2026-09-03 · **Phase:** 1 · **Nơi:** `crates/daemon/src/platform/`
+
+**Triệu chứng.** Clippy sạch trên Windows nhưng đỏ trên Linux, ở crate `daemon`. Không tái hiện được cục bộ vì máy dev không có trình biên dịch chéo cho SQLite.
+
+**Nguyên nhân gốc.** Module `platform` có hai bản cài đặt loại trừ nhau:
+
+```rust
+#[cfg(target_os = "linux")]      mod linux;
+#[cfg(not(target_os = "linux"))] mod other;
+```
+
+Hàm `platform_name()` có trong cả hai. Trong `other.rs` nó được gọi ở hai thông báo lỗi, nên trên Windows có người dùng. Trong `linux.rs` nó **không được gọi ở đâu**.
+
+Điểm mấu chốt: `mod platform;` trong một crate **binary** là module riêng tư. Một hàm `pub` nằm trong module riêng tư mà không ai gọi vẫn là mã chết, vì không có đường nào từ bên ngoài với tới nó. Với `-D warnings`, cảnh báo đó thành lỗi.
+
+**Cách sửa.** Dùng hàm đúng mục đích thay vì thêm `#[allow(dead_code)]`: lệnh `config --check` giờ in rõ đang chạy trên nền tảng nào. Việc này hữu ích thật, vì cùng một file cấu hình cho kết quả kiểm tra khác nhau giữa hai hệ.
+
+**Bài học.** Khi có hai bản cài đặt song song theo `cfg`, mọi hàm phải được dùng ở **cả hai** nhánh, nếu không CI sẽ đỏ ở đúng nhánh mà máy dev không chạy. Cách phòng: viết một bài kiểm tra hoặc một chỗ gọi dùng chung cho mọi hàm của trait/module song song, đặt ở phần mã không phụ thuộc nền tảng.
+
+**Lưu ý về cách chẩn đoán.** Không có công cụ biên dịch chéo trên máy dev (không zig, clang, docker hay WSL) nên không tái hiện được. `cargo clippy --target x86_64-unknown-linux-gnu` chạy được cho crate thuần Rust vì clippy không cần liên kết, nhưng gãy ở `libsqlite3-sys` vì crate đó cần trình biên dịch C. Đó vẫn là mẹo hữu ích: nó đã loại trừ được `nasdedup-core` và `nasdedup-linux`, thu hẹp phạm vi tìm kiếm.
+
+---
+
 ## BUG-007 — Tin vào bản tóm tắt trang web thay vì dữ liệu chính thức
 
 **Ngày:** 2026-09-03 · **Phase:** 1 · **Mức độ:** cao, vì đã báo sai cho người dùng

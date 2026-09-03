@@ -20,6 +20,7 @@ Mỗi mục có một mã định danh ổn định để chỗ khác tham chi�
 | [PERF.md](PERF.md) | Số đo thật, kết quả benchmark, giả định về hiệu năng | Khi đo được một con số hoặc phát hiện giả định sai |
 | [CHECKLIST.md](CHECKLIST.md) | Việc phải làm trước khi commit, trước khi chuyển phase, trước khi phát hành | Khi phát hiện một bước hay bị quên |
 | [SPEC-NOTES.md](SPEC-NOTES.md) | Chỗ spec mơ hồ, sai, hoặc lệch với code thực tế | Khi code không khớp spec |
+| [CI.md](CI.md) | Cách chẩn đoán CI từ xa khi không đọc được log | Khi CI đỏ |
 
 ## Cách dùng khi bắt đầu một phiên làm việc
 
