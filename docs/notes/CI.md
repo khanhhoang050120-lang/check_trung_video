@@ -63,6 +63,16 @@ for c in json.load(sys.stdin)['check_runs']:
 "
 ```
 
+**Đừng dùng `\$R/actions/jobs/<JOB_ID>/annotations`** — endpoint đó không tồn tại và trả
+`404 Not Found`, trông hệt như "không có annotation nào" nên dễ kết luận nhầm là CI
+không phát gì ra. Đường đúng đi qua `check-runs` như trên; `check_run.id` tình cờ trùng
+`job.id` nên dễ tưởng đã tra đúng chỗ. Hoặc gọi thẳng
+`\$R/check-runs/<CHECK_RUN_ID>/annotations`.
+
+**Bộ lọc `::error::` trong `ci.yml` phải bắt cả dòng **sau** `panicked at`.** Cargo in
+`thread '...' panicked at file.rs:12:5:` rồi **xuống dòng** mới in thông điệp thật. Lọc
+theo mẫu neo đầu dòng sẽ lấy được vị trí mà mất nội dung — và nội dung mới là thứ cần.
+
 ## Chờ một lần chạy hoàn tất
 
 Dùng vòng lặp `until` chạy nền, không dùng `sleep` cố định:

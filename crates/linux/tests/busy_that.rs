@@ -511,19 +511,32 @@ struct KetQuaBom {
     khop: bool,
     max_util: f64,
     max_khac: f64,
+    /// Chuỗi mẫu liên tiếp dài nhất có `util_other` **dưới** ngưỡng rảnh, tính bằng ms.
+    ///
+    /// Đây là thứ phân biệt "governor hỏng" với "đĩa chưa bao giờ rảnh". Runner của
+    /// GitHub dùng chung: sau khi giết `dd`, đĩa vẫn có thể bận vì việc của người
+    /// khác, và khi ấy governor **giữ phanh là đúng**. Không có con số này thì test
+    /// đổ lỗi cho governor mỗi lần runner ồn — đúng lần đỏ ở CI run 075630a.
+    ranh_lien_tuc_ms: u64,
     so_mau: usize,
 }
 
 /// Lấy mẫu định kỳ, nạp vào governor, dừng khi `dang_ban()` bằng `mong_doi` hoặc hết hạn.
+///
+/// `nguong_ranh` là `idle_threshold_pct / 100` của cấu hình đang dùng — cần ở đây để
+/// đo `ranh_lien_tuc_ms` bằng đúng ngưỡng mà governor đang so.
 fn bom_toi_khi(
     gov: &NasGovernor,
     lay: &mut Sampler,
     goc: Instant,
     han_ms: u64,
     mong_doi: bool,
+    nguong_ranh: f64,
 ) -> KetQuaBom {
     let het_han = Instant::now() + Duration::from_millis(han_ms);
-    let mut kq = KetQuaBom { khop: false, max_util: 0.0, max_khac: 0.0, so_mau: 0 };
+    let mut kq =
+        KetQuaBom { khop: false, max_util: 0.0, max_khac: 0.0, ranh_lien_tuc_ms: 0, so_mau: 0 };
+    let mut chuoi_ranh_ms = 0_u64;
     while Instant::now() < het_han {
         std::thread::sleep(Duration::from_millis(CHU_KY_MS));
         // Đồng hồ đơn điệu, khác với `daemon::bay_gio()` mà `vong_scheduler` dùng.
@@ -537,6 +550,11 @@ fn bom_toi_khi(
                 kq.so_mau += 1;
                 kq.max_util = kq.max_util.max(t.util);
                 kq.max_khac = kq.max_khac.max(t.util_other);
+                // Cộng dồn theo nhịp lấy mẫu chứ không theo số mẫu: nhịp là thứ
+                // `BoPhatHien` so với `idle_window`.
+                chuoi_ranh_ms =
+                    if t.util_other < nguong_ranh { chuoi_ranh_ms + CHU_KY_MS } else { 0 };
+                kq.ranh_lien_tuc_ms = kq.ranh_lien_tuc_ms.max(chuoi_ranh_ms);
                 gov.nap_tai(t.util_other, now);
             }
             Ok(None) => {}
@@ -571,12 +589,14 @@ fn dd_o_tien_trinh_khac_bat_should_pause_roi_nha_sau_khi_dung() {
     };
     kiem_tra_dd(thu_muc.path());
 
-    let gov = NasGovernor::cuc_bo(&cau_hinh_rut_ngan());
+    let cfg = cau_hinh_rut_ngan();
+    let nguong_ranh = f64::from(cfg.idle_threshold_pct) / 100.0;
+    let gov = NasGovernor::cuc_bo(&cfg);
     let goc = Instant::now();
     let _ = lay.lay_mau().expect("mẫu mồi");
 
     let tai = TaiNang::bat_dau(thu_muc.path());
-    let kq = bom_toi_khi(&gov, &mut lay, goc, HAN_BAN_MS, true);
+    let kq = bom_toi_khi(&gov, &mut lay, goc, HAN_BAN_MS, true, nguong_ranh);
 
     // Tiền đề trước kết luận, từ thô đến tinh: `dd` không chạy được thì "không thấy
     // bận" là đúng, và thông điệp phải nói ra điều đó thay vì đổ lỗi cho governor.
@@ -611,21 +631,41 @@ fn dd_o_tien_trinh_khac_bat_should_pause_roi_nha_sau_khi_dung() {
     assert!(gov.should_pause(), "dang_ban() bật thì should_pause() phải bật (spec 5.8)");
     assert!(!gov.dang_dung_tay(), "phanh phải đến từ đĩa bận, không phải `nasdedup pause`");
 
-    // Dừng tải rồi xóa file ngay: xóa 1 GiB cũng là I/O, và nó **không** vào
-    // `/proc/self/io` (đó là metadata), nên để lẫn vào pha đo thì nó hiện ra như tải
-    // của người khác và làm chuỗi rảnh đứt quãng.
+    // Dừng tải, **không** xóa file ở đây. Xóa 1 GiB cũng là I/O và nó không vào
+    // `/proc/self/io` (đó là metadata), nên nó hiện ra đúng như tải của người khác và
+    // làm đứt chuỗi rảnh mà pha sau đang cần đo. `TempDir` tự dọn lúc test kết thúc.
     drop(tai);
-    for i in 0..SO_LUONG_DD {
-        let _ = std::fs::remove_file(thu_muc.path().join(format!("tai-{i}.bin")));
-    }
     std::thread::sleep(Duration::from_millis(500));
 
-    let kq2 = bom_toi_khi(&gov, &mut lay, goc, HAN_RANH_MS, false);
+    let kq2 = bom_toi_khi(&gov, &mut lay, goc, HAN_RANH_MS, false, nguong_ranh);
+    if kq2.khop {
+        assert!(!gov.should_pause(), "nhả phanh đĩa rồi thì should_pause() phải tắt");
+        return;
+    }
+
+    // Governor không nhả. Trước khi đổ lỗi cho nó, hỏi: đĩa **đã** rảnh chưa? Nếu
+    // `util_other` chưa bao giờ xuống dưới ngưỡng đủ lâu bằng `idle_window` thì giữ
+    // phanh là hành vi **đúng**, và cái sai là môi trường đo, không phải mã sản phẩm.
     assert!(
-        kq2.khop,
-        "đã giết hết dd nhưng governor không nhả sau {HAN_RANH_MS} ms: util lớn nhất {:.2}, \
-         util_other lớn nhất {:.2}, {} mẫu",
-        kq2.max_util, kq2.max_khac, kq2.so_mau
+        kq2.ranh_lien_tuc_ms < CUA_SO_RANH_MS as u64,
+        "đĩa đã rảnh liên tục {} ms — quá cửa sổ {CUA_SO_RANH_MS} ms — mà governor vẫn không \
+         nhả sau {HAN_RANH_MS} ms: util lớn nhất {:.2}, util_other lớn nhất {:.2}, {} mẫu",
+        kq2.ranh_lien_tuc_ms,
+        kq2.max_util,
+        kq2.max_khac,
+        kq2.so_mau
     );
-    assert!(!gov.should_pause(), "nhả phanh đĩa rồi thì should_pause() phải tắt");
+
+    // Đây **là** một đường không kiểm được gì, nên nó phải ồn ào. Lý do chấp nhận:
+    // chiều "nhả phanh" đã có bằng chứng tất định ở lớp 1
+    // (`vong_scheduler_that_dung_khi_dia_ban_vi_nguoi_khac_roi_nha_khi_ranh`, chạy mọi
+    // lần `cargo test`). Thứ chỉ lớp này chứng minh được là chiều ngược lại: phần
+    // cứng thật có sinh đủ tín hiệu để vượt ngưỡng bận không — và điều đó đã được
+    // khẳng định ở trên rồi.
+    eprintln!(
+        "CẢNH BÁO: máy đo chưa bao giờ rảnh đủ {CUA_SO_RANH_MS} ms sau khi giết dd \
+         (dài nhất {} ms, util_other lớn nhất {:.2}, {} mẫu). Chiều NHẢ PHANH không được \
+         kiểm ở lần chạy này; chiều BẬT PHANH thì có.",
+        kq2.ranh_lien_tuc_ms, kq2.max_khac, kq2.so_mau
+    );
 }
