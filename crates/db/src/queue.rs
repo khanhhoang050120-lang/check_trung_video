@@ -1,10 +1,14 @@
-//! Hàng đợi công việc (spec 4.3).
+//! Hàng đợi công việc (spec 4.3) trên SQLite.
 //!
 //! Hàng đợi không phải bảng riêng: nó là các row `files` có
 //! `state ∈ {settling, sized, hashed}` và `ready_at IS NOT NULL`.
 //! `verified` **không** thuộc hàng đợi; chỉ `requeue_verified` đưa nó về `hashed`.
+//!
+//! Hành vi ở đây phải trùng khít với `nasdedup_core::repo::rules::decide_upsert`
+//! (bản diễn giải thuần dùng cho `MemoryRepository`); bộ test tương thích dùng
+//! chung là thứ giữ hai bên không lệch nhau.
 
-use nasdedup_core::model::{FileLoc, Identity, RootKind, Ts};
+use nasdedup_core::model::{FileLoc, FileRecord, Identity, RootKind, Ts};
 use nasdedup_core::repo::UpsertResult;
 use rusqlite::{named_params, Connection, OptionalExtension};
 
@@ -49,8 +53,9 @@ ON CONFLICT (sub_id, ino) DO UPDATE SET
     updated_at   = excluded.updated_at,
 
     state = CASE
-        WHEN files.state = 'missing' AND :fp_same THEN COALESCE(files.prev_state, 'settling')
+        WHEN files.state = 'missing' AND :fp_same THEN :restored
         WHEN :fp_same THEN files.state
+        WHEN files.skip_reason = 'user_undo' THEN files.state
         ELSE 'settling'
     END,
 
@@ -60,9 +65,11 @@ ON CONFLICT (sub_id, ino) DO UPDATE SET
     END,
 
     ready_at = CASE
+        -- Điều kiện phải bám vào state ĐÃ KHÔI PHỤC, không phải prev_state: prev_state
+        -- không nằm trong danh sách khôi phục (ví dụ 'missing') sẽ rơi về 'settling',
+        -- và một row 'settling' không có ready_at thì kẹt vĩnh viễn.
         WHEN files.state = 'missing' AND :fp_same THEN
-            CASE WHEN COALESCE(files.prev_state,'settling') IN ('settling','sized','hashed')
-                 THEN excluded.ready_at ELSE NULL END
+            CASE WHEN :restored IN ('settling','sized','hashed') THEN excluded.ready_at ELSE NULL END
         WHEN :fp_same AND files.state NOT IN ('settling','sized','hashed') THEN files.ready_at
         ELSE excluded.ready_at
     END,
@@ -81,36 +88,90 @@ ON CONFLICT (sub_id, ino) DO UPDATE SET
 RETURNING id, state
 ";
 
-/// Thêm hoặc cập nhật một row trong hàng đợi (spec 4.3).
+/// Bảng khôi phục của `nasdedup_core::state::restore_target`, viết lại bằng SQL.
 ///
-/// `kind` quyết định fingerprint có so `ctime` không: root remote (CIFS) không có
-/// `ctime` POSIX nên chỉ so `(size, mtime)` (spec 4.1).
+/// `state::restore_target_tests::danh_sach_khoi_phuc_khop_voi_sql` khẳng định hai
+/// danh sách còn khớp nhau khi bảng 4.4 thay đổi.
+const RESTORED: &str = "(CASE WHEN files.prev_state IN
+     ('settling','sized','hashed','verified','deduped','distinct','canonical','skipped','failed')
+     THEN files.prev_state ELSE 'settling' END)";
+
+/// Loại root theo `root_id`; lỗi `Constraint` nếu root chưa đăng ký.
+///
+/// Root quyết định fingerprint có tính `ctime` không, nên một `root_id` lạ là lỗi
+/// lập trình chứ không phải trường hợp cần đoán bừa.
 ///
 /// # Errors
-/// Lỗi SQLite.
+/// Lỗi SQLite, hoặc root không tồn tại.
+pub fn root_kind(conn: &Connection, root_id: i64) -> Result<RootKind, DbError> {
+    let kind: Option<String> = conn
+        .query_row("SELECT kind FROM roots WHERE id = ?1", [root_id], |r| r.get(0))
+        .optional()?;
+    match kind {
+        Some(k) => k.parse().map_err(|_| DbError::Decode(format!("root kind không hợp lệ: {k:?}"))),
+        None => Err(DbError::Constraint(format!("root {root_id} chưa đăng ký"))),
+    }
+}
+
+/// Thêm hoặc cập nhật một row trong hàng đợi (spec 4.3), trong một transaction.
+///
+/// # Errors
+/// Lỗi SQLite, hoặc `loc.root_id` chưa đăng ký.
 pub fn upsert_pending(
     conn: &Connection,
     id: &Identity,
     loc: &FileLoc,
     ready_at: Ts,
     priority: u8,
-    kind: RootKind,
     now: Ts,
+) -> Result<UpsertResult, DbError> {
+    let kind = root_kind(conn, loc.root_id)?;
+    let tx = conn.unchecked_transaction()?;
+    let out = upsert_in_tx(&tx, id, loc, ready_at, priority, now, kind)?;
+    tx.commit()?;
+    Ok(out)
+}
+
+/// Phần lõi của upsert, dùng lại bởi `restore_or_reset` và `presence_seen` để hai
+/// đường đó không thể lệch ngữ nghĩa với upsert (spec 4.4).
+///
+/// # Errors
+/// Lỗi SQLite.
+pub fn upsert_in_tx(
+    tx: &Connection,
+    id: &Identity,
+    loc: &FileLoc,
+    ready_at: Ts,
+    priority: u8,
+    now: Ts,
+    kind: RootKind,
 ) -> Result<UpsertResult, DbError> {
     // Fingerprint đã lưu = kết quả xử lý gần nhất. So bằng SQL để việc quyết định
     // và việc ghi nằm trong cùng một câu lệnh, tránh race giữa đọc và ghi.
+    // Root remote (CIFS) không có ctime POSIX nên chỉ so (size, mtime) — spec 4.1.
     let fp_same_sql = if kind.uses_ctime() {
-        "(files.size, files.mtime_ns, files.ctime_ns) IS (:size, :mtime_ns, :ctime_ns)"
+        "((files.size, files.mtime_ns, files.ctime_ns) IS (:size, :mtime_ns, :ctime_ns))"
     } else {
-        "(files.size, files.mtime_ns) IS (:size, :mtime_ns)"
+        "((files.size, files.mtime_ns) IS (:size, :mtime_ns))"
     };
-    let sql = UPSERT.replace(":fp_same", fp_same_sql);
+    let sql = UPSERT.replace(":fp_same", fp_same_sql).replace(":restored", RESTORED);
 
-    let mut stmt = conn.prepare_cached(&sql)?;
-    let (id_out, state): (i64, String) = stmt.query_row(
+    // Group cũ của row, đọc trong CÙNG transaction: chỉ khi upsert này làm row rời
+    // nhóm thì nhóm mới mất gốc (xem `memory::queue::upsert_pending`).
+    let was_group: Option<i64> = tx
+        .query_row(
+            "SELECT group_id FROM files WHERE sub_id = ?1 AND ino = ?2",
+            rusqlite::params![id.key.sub_id.as_bytes().as_slice(), row::u64_to_i64(id.key.ino)],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+
+    let mut stmt = tx.prepare_cached(&sql)?;
+    let (row_id, state): (i64, String) = stmt.query_row(
         named_params! {
             ":sub_id": id.key.sub_id.as_bytes().as_slice(),
-            ":ino": i64::from_le_bytes(id.key.ino.to_le_bytes()),
+            ":ino": row::u64_to_i64(id.key.ino),
             ":domain_id": id.domain_id.as_bytes().as_slice(),
             ":root_id": loc.root_id,
             ":rel_path": row::path_to_text(&loc.rel_path),
@@ -126,10 +187,22 @@ pub fn upsert_pending(
         },
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    drop(stmt);
+
+    // Nội dung đổi thì row rời nhóm; nếu nó đang là canonical thì nhóm mất gốc và
+    // lần verify sau phải bầu lại, nếu không group trỏ vào file đã khác nội dung.
+    if let Some(g) = was_group {
+        tx.execute(
+            "UPDATE content_groups SET canonical_file_id = NULL
+             WHERE id = ?2 AND canonical_file_id = ?1
+               AND (SELECT group_id FROM files WHERE id = ?1) IS NULL",
+            rusqlite::params![row_id, g],
+        )?;
+    }
 
     // `dropped` = row đang ở trạng thái nghỉ nên sự kiện này không đánh thức nó.
     let dropped = !matches!(state.as_str(), "settling" | "sized" | "hashed");
-    Ok(UpsertResult { id: id_out, dropped_as_self_event: dropped })
+    Ok(UpsertResult { id: row_id, dropped_as_self_event: dropped })
 }
 
 /// Lấy row tiếp theo đến hạn (spec 4.3).
@@ -145,7 +218,7 @@ pub fn next_ready(
     now: Ts,
     allow_heavy: bool,
     max_wait_ms: i64,
-) -> Result<Option<nasdedup_core::model::FileRecord>, DbError> {
+) -> Result<Option<FileRecord>, DbError> {
     let sql = format!(
         "SELECT {cols} FROM files
          WHERE state IN ('settling','sized','hashed')
@@ -154,7 +227,7 @@ pub fn next_ready(
            AND (:allow_heavy
                 OR state IN ('settling','sized')
                 OR (heavy_wait_since IS NOT NULL AND heavy_wait_since <= :deadline))
-         ORDER BY priority, ready_at
+         ORDER BY priority, ready_at, id
          LIMIT 1",
         cols = row::FILE_COLUMNS
     );
@@ -169,7 +242,7 @@ pub fn next_ready(
             row::file_from_row,
         )
         .optional()?;
-    rec.transpose()
+    Ok(rec)
 }
 
 /// Đếm row đang chờ ổn định từ sự kiện real-time (spec 4.3).
@@ -189,7 +262,7 @@ pub fn pending_counts(conn: &Connection) -> Result<(u64, Vec<(u32, u64)>), DbErr
     let mut stmt = conn.prepare_cached(
         "SELECT owner_uid, COUNT(*) FROM files
          WHERE priority = 0 AND state = 'settling' AND ready_at IS NOT NULL
-         GROUP BY owner_uid",
+         GROUP BY owner_uid ORDER BY owner_uid",
     )?;
     let per_uid = stmt
         .query_map([], |r| {
@@ -199,298 +272,4 @@ pub fn pending_counts(conn: &Connection) -> Result<(u64, Vec<(u32, u64)>), DbErr
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok((u64::try_from(total).unwrap_or(0), per_uid))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_util::{db_moi, ident, loc};
-    use nasdedup_core::model::State;
-
-    const NOW: Ts = 1_000_000;
-    const DELAY: Ts = 900_000; // 15 phút
-
-    #[test]
-    fn su_kien_dau_tien_tao_row_settling() {
-        let conn = db_moi();
-        let id = ident(1, 100, 5, 5);
-        let r = upsert_pending(&conn, &id, &loc("a.mp4"), NOW + DELAY, 0, RootKind::Local, NOW)
-            .unwrap();
-        assert!(!r.dropped_as_self_event);
-
-        let rec = next_ready(&conn, NOW + DELAY, true, 0).unwrap().unwrap();
-        assert_eq!(rec.state, State::Settling);
-        assert_eq!(rec.id, r.id);
-        assert_eq!(rec.enq.unwrap().size, 100);
-    }
-
-    #[test]
-    fn nhieu_su_kien_cung_inode_chi_tao_mot_row_va_day_ready_at() {
-        // Spec 4.3: gộp sự kiện theo inode. Một upload 50 GB sinh hàng chục nghìn
-        // sự kiện; nếu mỗi sự kiện là một hàng đợi thì worker không bao giờ dứt.
-        let conn = db_moi();
-        let id = ident(1, 100, 5, 5);
-        for i in 0..100 {
-            upsert_pending(&conn, &id, &loc("a.mp4"), NOW + i + DELAY, 0, RootKind::Local, NOW + i)
-                .unwrap();
-        }
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 1, "phải gộp thành một row");
-
-        let ready: i64 = conn.query_row("SELECT ready_at FROM files", [], |r| r.get(0)).unwrap();
-        assert_eq!(ready, NOW + 99 + DELAY, "ready_at theo sự kiện cuối cùng");
-    }
-
-    #[test]
-    fn su_kien_tren_row_deduped_voi_fingerprint_khong_doi_bi_bo_qua() {
-        // Đây là guard chống vòng lặp tự kích hoạt (spec 4.3): sau khi dedup xong,
-        // chính daemon đóng fd và sinh ra IN_CLOSE_WRITE cho file vừa xử lý.
-        let conn = db_moi();
-        let id = ident(1, 100, 5, 5);
-        upsert_pending(&conn, &id, &loc("a.mp4"), NOW, 0, RootKind::Local, NOW).unwrap();
-        conn.execute(
-            "UPDATE files SET state = 'deduped', ready_at = NULL, sparse_hash = X'AB', group_id = NULL",
-            [],
-        )
-        .unwrap();
-
-        let r = upsert_pending(&conn, &id, &loc("a.mp4"), NOW + DELAY, 0, RootKind::Local, NOW)
-            .unwrap();
-        assert!(r.dropped_as_self_event, "sự kiện của chính daemon phải bị bỏ qua");
-
-        let (state, ready, hash): (String, Option<i64>, Option<Vec<u8>>) = conn
-            .query_row("SELECT state, ready_at, sparse_hash FROM files", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
-            .unwrap();
-        assert_eq!(state, "deduped", "state phải giữ nguyên");
-        assert_eq!(ready, None, "không được đánh thức");
-        assert_eq!(hash, Some(vec![0xAB]), "hash phải giữ để dùng lại");
-    }
-
-    #[test]
-    fn su_kien_voi_fingerprint_doi_dua_row_ve_settling_va_xoa_hash() {
-        let conn = db_moi();
-        let id = ident(1, 100, 5, 5);
-        upsert_pending(&conn, &id, &loc("a.mp4"), NOW, 0, RootKind::Local, NOW).unwrap();
-        conn.execute(
-            "UPDATE files SET state = 'deduped', ready_at = NULL, sparse_hash = X'AB',
-                              group_id = NULL, magic_ok = 1, attempts = 3",
-            [],
-        )
-        .unwrap();
-
-        // Người dùng ghi đè file: mtime đổi.
-        let moi = ident(1, 100, 999, 999);
-        let r = upsert_pending(&conn, &moi, &loc("a.mp4"), NOW + DELAY, 0, RootKind::Local, NOW)
-            .unwrap();
-        assert!(!r.dropped_as_self_event);
-
-        let (state, prev, hash, magic, attempts): (
-            String,
-            Option<String>,
-            Option<Vec<u8>>,
-            Option<i64>,
-            i64,
-        ) = conn
-            .query_row(
-                "SELECT state, prev_state, sparse_hash, magic_ok, attempts FROM files",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .unwrap();
-        assert_eq!(state, "settling");
-        assert_eq!(prev.as_deref(), Some("deduped"), "phải nhớ trạng thái cũ");
-        assert_eq!(hash, None, "hash cũ không còn đúng");
-        assert_eq!(magic, None);
-        assert_eq!(attempts, 0, "đếm lại từ đầu cho nội dung mới");
-    }
-
-    #[test]
-    fn row_missing_duoc_khoi_phuc_khi_thay_lai() {
-        // Kịch bản thật: người dùng xóa file vào thùng rác rồi khôi phục.
-        let conn = db_moi();
-        let id = ident(1, 100, 5, 5);
-        upsert_pending(&conn, &id, &loc("a.mp4"), NOW, 0, RootKind::Local, NOW).unwrap();
-        conn.execute(
-            "UPDATE files SET state = 'missing', prev_state = 'deduped', ready_at = NULL,
-                              sparse_hash = X'AB'",
-            [],
-        )
-        .unwrap();
-
-        upsert_pending(&conn, &id, &loc("a.mp4"), NOW + DELAY, 0, RootKind::Local, NOW).unwrap();
-
-        let (state, hash): (String, Option<Vec<u8>>) = conn
-            .query_row("SELECT state, sparse_hash FROM files", [], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap();
-        assert_eq!(state, "deduped", "khôi phục về trạng thái trước khi mất");
-        assert_eq!(hash, Some(vec![0xAB]), "không phải hash lại");
-    }
-
-    #[test]
-    fn row_missing_thay_lai_voi_noi_dung_khac_thi_xu_ly_lai() {
-        let conn = db_moi();
-        let id = ident(1, 100, 5, 5);
-        upsert_pending(&conn, &id, &loc("a.mp4"), NOW, 0, RootKind::Local, NOW).unwrap();
-        conn.execute(
-            "UPDATE files SET state = 'missing', prev_state = 'deduped', sparse_hash = X'AB'",
-            [],
-        )
-        .unwrap();
-
-        let khac = ident(1, 200, 77, 77);
-        upsert_pending(&conn, &khac, &loc("a.mp4"), NOW + DELAY, 0, RootKind::Local, NOW).unwrap();
-
-        let (state, hash): (String, Option<Vec<u8>>) = conn
-            .query_row("SELECT state, sparse_hash FROM files", [], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap();
-        assert_eq!(state, "settling");
-        assert_eq!(hash, None);
-    }
-
-    #[test]
-    fn user_undo_khong_bi_xoa_khi_file_doi() {
-        // Người dùng đã chủ động tách file; chỉ `db unskip` mới đảo lại quyết định đó.
-        let conn = db_moi();
-        let id = ident(1, 100, 5, 5);
-        upsert_pending(&conn, &id, &loc("a.mp4"), NOW, 0, RootKind::Local, NOW).unwrap();
-        conn.execute(
-            "UPDATE files SET state = 'skipped', skip_reason = 'user_undo', ready_at = NULL",
-            [],
-        )
-        .unwrap();
-
-        let moi = ident(1, 100, 999, 999);
-        upsert_pending(&conn, &moi, &loc("a.mp4"), NOW + DELAY, 0, RootKind::Local, NOW).unwrap();
-
-        let reason: Option<String> =
-            conn.query_row("SELECT skip_reason FROM files", [], |r| r.get(0)).unwrap();
-        assert_eq!(reason.as_deref(), Some("user_undo"));
-    }
-
-    #[test]
-    fn root_remote_bo_qua_ctime_khi_so_fingerprint() {
-        // Spec 4.1: CIFS không có ctime POSIX. Nếu so cả ctime thì mọi file trên
-        // máy Windows luôn trông như vừa đổi và pipeline không bao giờ tiến được.
-        let conn = db_moi();
-        let id = ident(1, 100, 5, 5);
-        upsert_pending(&conn, &id, &loc("a.mp4"), NOW, 0, RootKind::Remote, NOW).unwrap();
-        conn.execute("UPDATE files SET state = 'verified', ready_at = NULL", []).unwrap();
-
-        // ctime khác nhưng size và mtime giữ nguyên.
-        let ctime_khac = ident(1, 100, 5, 999_999);
-        let r = upsert_pending(
-            &conn,
-            &ctime_khac,
-            &loc("a.mp4"),
-            NOW + DELAY,
-            1,
-            RootKind::Remote,
-            NOW,
-        )
-        .unwrap();
-        assert!(r.dropped_as_self_event, "remote không được coi ctime là thay đổi");
-
-        let state: String = conn.query_row("SELECT state FROM files", [], |r| r.get(0)).unwrap();
-        assert_eq!(state, "verified");
-    }
-
-    #[test]
-    fn next_ready_uu_tien_su_kien_realtime_truoc_backlog_scan() {
-        let conn = db_moi();
-        // Row của scan tới hạn sớm hơn nhưng ưu tiên thấp hơn.
-        upsert_pending(
-            &conn,
-            &ident(1, 100, 1, 1),
-            &loc("scan.mp4"),
-            NOW - 500,
-            2,
-            RootKind::Local,
-            NOW,
-        )
-        .unwrap();
-        upsert_pending(&conn, &ident(2, 200, 2, 2), &loc("moi.mp4"), NOW, 0, RootKind::Local, NOW)
-            .unwrap();
-
-        let rec = next_ready(&conn, NOW, true, 0).unwrap().unwrap();
-        assert_eq!(rec.loc.rel_path.to_string_lossy(), "moi.mp4", "upload mới phải chạy trước");
-    }
-
-    #[test]
-    fn next_ready_khong_tra_row_chua_den_han() {
-        let conn = db_moi();
-        upsert_pending(
-            &conn,
-            &ident(1, 100, 1, 1),
-            &loc("a.mp4"),
-            NOW + DELAY,
-            0,
-            RootKind::Local,
-            NOW,
-        )
-        .unwrap();
-        assert!(next_ready(&conn, NOW, true, 0).unwrap().is_none());
-        assert!(next_ready(&conn, NOW + DELAY, true, 0).unwrap().is_some());
-    }
-
-    #[test]
-    fn ngoai_khung_gio_chi_tra_settling_va_sized() {
-        let conn = db_moi();
-        upsert_pending(&conn, &ident(1, 100, 1, 1), &loc("a.mp4"), NOW, 0, RootKind::Local, NOW)
-            .unwrap();
-        conn.execute("UPDATE files SET state = 'hashed'", []).unwrap();
-
-        assert!(next_ready(&conn, NOW, false, 3_600_000).unwrap().is_none(), "hashed là bước nặng");
-        assert!(next_ready(&conn, NOW, true, 3_600_000).unwrap().is_some());
-    }
-
-    #[test]
-    fn row_cho_qua_lau_duoc_chay_du_ngoai_khung_gio() {
-        // Spec 4.3: max_wait để một file không bị treo vô hạn vì đĩa lúc nào cũng bận.
-        let conn = db_moi();
-        upsert_pending(&conn, &ident(1, 100, 1, 1), &loc("a.mp4"), NOW, 0, RootKind::Local, NOW)
-            .unwrap();
-        conn.execute(
-            "UPDATE files SET state = 'hashed', heavy_wait_since = :since",
-            named_params! { ":since": NOW - 7 * 3_600_000 },
-        )
-        .unwrap();
-
-        let max_wait = 6 * 3_600_000;
-        assert!(
-            next_ready(&conn, NOW, false, max_wait).unwrap().is_some(),
-            "đã chờ 7 giờ, quá max_wait 6 giờ"
-        );
-    }
-
-    #[test]
-    fn verified_khong_thuoc_hang_doi() {
-        // Spec 4.3: chỉ requeue_verified mới đưa nó về hashed.
-        let conn = db_moi();
-        upsert_pending(&conn, &ident(1, 100, 1, 1), &loc("a.mp4"), NOW, 0, RootKind::Local, NOW)
-            .unwrap();
-        conn.execute(
-            "UPDATE files SET state = 'verified', ready_at = :r",
-            named_params! { ":r": NOW },
-        )
-        .unwrap();
-        assert!(next_ready(&conn, NOW, true, 0).unwrap().is_none());
-    }
-
-    #[test]
-    fn pending_counts_chi_dem_su_kien_realtime() {
-        let conn = db_moi();
-        upsert_pending(&conn, &ident(1, 100, 1, 1), &loc("a.mp4"), NOW, 0, RootKind::Local, NOW)
-            .unwrap();
-        upsert_pending(&conn, &ident(2, 100, 1, 1), &loc("b.mp4"), NOW, 0, RootKind::Local, NOW)
-            .unwrap();
-        // Row của initial scan không được tính vào giới hạn.
-        upsert_pending(&conn, &ident(3, 100, 1, 1), &loc("c.mp4"), NOW, 2, RootKind::Local, NOW)
-            .unwrap();
-
-        let (total, per_uid) = pending_counts(&conn).unwrap();
-        assert_eq!(total, 2);
-        assert_eq!(per_uid, vec![(1000, 2)]);
-    }
 }

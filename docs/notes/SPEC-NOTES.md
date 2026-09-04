@@ -4,6 +4,26 @@ Chỗ bản đặc tả mơ hồ, sai, hoặc lệch với code. Sửa được 
 
 ---
 
+## SPEC-005 — Trait `Repository` thực tế lệch mục 3.3 ở sáu chỗ
+
+**Trạng thái:** đã hiện thực hóa, **spec cần cập nhật**
+
+Mục 3.3 viết chữ ký rút gọn (xem SPEC-004). Khi hiện thực hóa Phase 1, sáu chỗ phải đổi **ngữ nghĩa**
+chứ không chỉ cú pháp, nên phải ghi lại:
+
+| # | Mục 3.3 | Thực tế | Vì sao |
+| :-- | :--- | :--- | :--- |
+| 1 | hàm ghi tự lấy thời gian | mọi hàm ghi nhận `now: Ts` | Repository không được đọc đồng hồ: test phải điều khiển được thời gian, và hai bản cài đặt phải cho cùng kết quả với cùng đầu vào. |
+| 2 | `Transition` không có thời gian | `Transition.now` | Cùng lý do; `apply` ghi `updated_at` nên phải biết `now`. |
+| 3 | `presence_finish(root_id, scan_id)` | thêm `retention_ms` | Ngưỡng `missing → gone` là chính sách, thuộc config, không phải hằng số của tầng lưu trữ. |
+| 4 | `root_upsert(path, kind, ...)` | `root_upsert(&Root, now)` | Root đã có đủ trường (`label`, `windows_unc`, `active`) sau bản chốt thiết kế; truyền từng trường sẽ thành 8 tham số. |
+| 5 | `find_by_path` không nói thứ tự | ưu tiên row **chưa** `missing`/`gone`, rồi `id` nhỏ nhất | Sau khi đổi tên đè, hai row cùng `(root_id, rel_path)` cùng tồn tại: một row sống và một row vừa bị đánh dấu `missing`. Không có quy tắc thì kết quả phụ thuộc thứ tự chèn. |
+| 6 | không nói DB nằm đâu | `Config::db_path()` = `state_dir/nasdedup.db` | Mục 4.2 chỉ nói thư mục; tên file phải chốt ở một chỗ. |
+
+**Cần làm:** cập nhật mục 3.3 và 4.2 của bản đặc tả cho khớp.
+
+---
+
 ## SPEC-004 — Chữ ký trong mục 3.3 là mô tả ý định
 
 **Trạng thái:** đã hiểu, không cần sửa spec

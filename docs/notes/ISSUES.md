@@ -4,15 +4,31 @@ Những chỗ cố ý để lại chưa hoàn chỉnh. Khi xử lý xong thì ch
 
 ---
 
-## ISSUE-007 — Phần còn lại của Phase 1 chưa làm
+## ISSUE-007 — Phase 1 đã xong (đóng)
 
-**Từ:** Phase 1 · **Nơi:** `crates/db/`
+**Từ:** Phase 1 · **Nơi:** `crates/db/`, `crates/core/src/repo/` · **Đóng ngày:** 2026-09-04
 
-Đã xong: schema với migration, hàng đợi `ready_at` với guard fingerprint, chuyển đổi row, phân loại lỗi, và test khẳng định truy vấn dùng index.
+Đã hoàn tất: trait `Repository`, `MemoryRepository`, `SqliteRepo`, DB actor (`DbHandle`), `apply` với CAS
+trong một transaction, và các lệnh `nasdedup db {stats|check|rebuild|unskip}`.
 
-Chưa làm: DB actor chạy trên thread riêng sở hữu `Connection`, hàm `apply` thực hiện CAS trong một transaction, và `MemoryRepository` trong `nasdedup-core`.
+Mối lo ban đầu — hai bản cài đặt lệch ngữ nghĩa mà test vẫn xanh — được xử lý bằng bộ test tương thích
+dùng chung: `nasdedup_core::repository_conformance_tests!(factory)` sinh 54 kịch bản, chạy ba lần
+(`MemoryRepository`, `SqliteRepo`, `DbHandle`). Thêm một hàm vào trait mà quên một bản cài đặt thì
+không biên dịch được; làm lệch hành vi thì các kịch bản đó đỏ.
 
-Hai bản cài đặt `Repository` (SQLite và trong bộ nhớ) phải có **cùng ngữ nghĩa**. Nếu làm lệch nhau, test pipeline sẽ xanh trong khi bản thật sai. Cân nhắc viết một bộ test dùng chung chạy trên cả hai.
+16 kịch bản trong số đó ra đời **sau** khi bộ 38 kịch bản đầu tiên đã xanh: một vòng so theo ma trận,
+fuzz vi phân và rà soát đối nghịch tìm thêm 12 chỗ lệch (BUG-009, BUG-010, BUG-011). Nói cách khác,
+bộ test tương thích tự viết tay bắt được khoảng hai phần ba số lỗi thật; xem mục "Khi có hai bản cài
+đặt cùng một trait" trong `CHECKLIST.md`.
+
+Còn lại của tầng dữ liệu, để Phase 2 trở đi: chưa có bản cài đặt `Deduper` thật (mới có `DryRunDeduper`);
+`recovery::decide` đã có và test đủ mọi nhánh, nhưng chưa ai gọi nó lúc boot (cần `statx`, Phase 3);
+và `admin::*` chưa gọi được khi daemon **đang chạy** (xem DEC-015).
+
+Một điểm yếu còn để ngỏ: `presence_begin` không trả về token phiên và không từ chối khi đã có một phiên
+đang chạy — hai bên gọi chồng nhau sẽ xóa tập "đã thấy" của nhau, và `presence_finish` đánh `missing`
+nhầm cho file còn sống. Cả hai bản cài đặt hành xử giống nhau nên bộ test tương thích không thấy gì.
+Hiện chưa có ai gọi; phải xử lý trước khi viết scanner ở Phase 4.
 
 ---
 

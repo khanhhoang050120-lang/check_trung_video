@@ -1,4 +1,4 @@
-//! Chuyển đổi giữa row SQLite và kiểu dữ liệu của `nasdedup-core`.
+//! Chuyển đổi giữa row SQLite và kiểu dữ liệu của `nasdedup-core` (bảng `files`).
 //!
 //! SQLite chỉ có `i64`, trong khi model dùng `u64` cho `size` và `ino`. Ép kiểu
 //! bằng `as` sẽ âm thầm sai với giá trị lớn, nên ở đây dùng chuyển đổi giữ nguyên
@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use nasdedup_core::model::{DomainId, FileKey, FileLoc, FileRecord, Fingerprint, State, SubId};
+use rusqlite::types::Type;
 use rusqlite::Row;
 
 use crate::error::DbError;
@@ -34,75 +35,108 @@ pub fn i64_to_u64(v: i64) -> u64 {
     u64::from_le_bytes(v.to_le_bytes())
 }
 
-/// Đường dẫn sang chuỗi lưu DB.
+/// Đường dẫn sang chuỗi lưu DB, **nguyên văn**.
 ///
-/// Dùng `to_string_lossy` vì DB cần `TEXT` để so sánh và sắp xếp được. Tên file
-/// không hợp lệ UTF-8 rất hiếm trên NAS chia sẻ qua SMB.
+/// Cố tình không đổi `\` thành `/`: trên NAS Linux, `\` là một ký tự tên file bình
+/// thường. Viết lại nó sẽ gộp hai file khác nhau (`x/y` và `x\y`) vào cùng một
+/// `(root_id, rel_path)`, và khiến vị từ "nằm dưới thư mục" coi `phim\a.mp4` là con
+/// của thư mục `phim`. Chỗ duy nhất từng cần chuyển đổi là phép **ghép** đường dẫn;
+/// nay cả hai bản cài đặt đều ghép bằng chuỗi với `/`.
 #[must_use]
 pub fn path_to_text(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
+    p.to_string_lossy().into_owned()
 }
 
-fn blob16(row: &Row<'_>, idx: usize, what: &str) -> Result<[u8; 16], rusqlite::Error> {
+/// Lỗi giải mã một cột thành `rusqlite::Error` để dùng được trong `query_map`.
+pub fn decode_err(idx: usize, ty: Type, msg: String) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(idx, ty, Box::new(DbError::Decode(msg)))
+}
+
+pub fn blob16(row: &Row<'_>, idx: usize, what: &str) -> rusqlite::Result<[u8; 16]> {
     let v: Vec<u8> = row.get(idx)?;
     <[u8; 16]>::try_from(v.as_slice()).map_err(|_| {
-        rusqlite::Error::FromSqlConversionFailure(
-            idx,
-            rusqlite::types::Type::Blob,
-            Box::new(DbError::Decode(format!("{what} phải đúng 16 byte, nhận {}", v.len()))),
-        )
+        decode_err(idx, Type::Blob, format!("{what} phải đúng 16 byte, nhận {}", v.len()))
     })
 }
 
-fn blob32(row: &Row<'_>, idx: usize) -> Result<Option<[u8; 32]>, rusqlite::Error> {
+pub fn blob16_opt(row: &Row<'_>, idx: usize, what: &str) -> rusqlite::Result<Option<[u8; 16]>> {
     let v: Option<Vec<u8>> = row.get(idx)?;
-    match v {
-        None => Ok(None),
-        Some(b) => <[u8; 32]>::try_from(b.as_slice()).map(Some).map_err(|_| {
-            rusqlite::Error::FromSqlConversionFailure(
-                idx,
-                rusqlite::types::Type::Blob,
-                Box::new(DbError::Decode(format!("hash phải đúng 32 byte, nhận {}", b.len()))),
-            )
-        }),
-    }
+    v.map(|b| {
+        <[u8; 16]>::try_from(b.as_slice()).map_err(|_| {
+            decode_err(idx, Type::Blob, format!("{what} phải đúng 16 byte, nhận {}", b.len()))
+        })
+    })
+    .transpose()
 }
 
-fn parse_state(s: &str) -> Result<State, DbError> {
-    s.parse().map_err(|_| DbError::Decode(format!("state không hợp lệ: {s:?}")))
+pub fn blob32(row: &Row<'_>, idx: usize) -> rusqlite::Result<Option<[u8; 32]>> {
+    let v: Option<Vec<u8>> = row.get(idx)?;
+    v.map(|b| {
+        <[u8; 32]>::try_from(b.as_slice()).map_err(|_| {
+            decode_err(idx, Type::Blob, format!("hash phải đúng 32 byte, nhận {}", b.len()))
+        })
+    })
+    .transpose()
+}
+
+/// Parse một cột enum lưu dạng chuỗi.
+pub fn parse_col<T: std::str::FromStr>(
+    row: &Row<'_>,
+    idx: usize,
+    what: &str,
+) -> rusqlite::Result<T> {
+    let s: String = row.get(idx)?;
+    s.parse().map_err(|_| decode_err(idx, Type::Text, format!("{what} không hợp lệ: {s:?}")))
+}
+
+pub fn parse_col_opt<T: std::str::FromStr>(
+    row: &Row<'_>,
+    idx: usize,
+    what: &str,
+) -> rusqlite::Result<Option<T>> {
+    let s: Option<String> = row.get(idx)?;
+    s.map(|s| {
+        s.parse().map_err(|_| decode_err(idx, Type::Text, format!("{what} không hợp lệ: {s:?}")))
+    })
+    .transpose()
+}
+
+pub fn key_from(row: &Row<'_>, sub_idx: usize, ino_idx: usize) -> rusqlite::Result<FileKey> {
+    Ok(FileKey {
+        sub_id: SubId(blob16(row, sub_idx, "sub_id")?),
+        ino: i64_to_u64(row.get(ino_idx)?),
+    })
+}
+
+pub fn key_from_opt(
+    row: &Row<'_>,
+    sub_idx: usize,
+    ino_idx: usize,
+) -> rusqlite::Result<Option<FileKey>> {
+    let sub = blob16_opt(row, sub_idx, "sub_id")?;
+    let ino: Option<i64> = row.get(ino_idx)?;
+    Ok(match (sub, ino) {
+        (Some(s), Some(i)) => Some(FileKey { sub_id: SubId(s), ino: i64_to_u64(i) }),
+        _ => None,
+    })
 }
 
 /// Đọc một row của bảng `files` theo thứ tự cột [`FILE_COLUMNS`].
-///
-/// Trả `Result` lồng nhau vì `query_row` cần `rusqlite::Error` cho lỗi truy vấn,
-/// còn lỗi giải mã giá trị enum là `DbError` để phân biệt DB hỏng với lỗi I/O.
-///
-/// # Errors
-/// Lỗi đọc cột hoặc kiểu dữ liệu sai.
-pub fn file_from_row(row: &Row<'_>) -> Result<Result<FileRecord, DbError>, rusqlite::Error> {
-    let state_str: String = row.get(12)?;
-    let prev_str: Option<String> = row.get(13)?;
-
-    let state = match parse_state(&state_str) {
-        Ok(s) => s,
-        Err(e) => return Ok(Err(e)),
-    };
-    let prev_state = match prev_str.as_deref().map(parse_state).transpose() {
-        Ok(v) => v,
-        Err(e) => return Ok(Err(e)),
-    };
-
-    let enq_size: Option<i64> = row.get(20)?;
-    let enq = match (enq_size, row.get::<_, Option<i64>>(21)?, row.get::<_, Option<i64>>(22)?) {
+pub fn file_from_row(row: &Row<'_>) -> rusqlite::Result<FileRecord> {
+    let enq = match (
+        row.get::<_, Option<i64>>(20)?,
+        row.get::<_, Option<i64>>(21)?,
+        row.get::<_, Option<i64>>(22)?,
+    ) {
         (Some(s), Some(m), Some(c)) => {
             Some(Fingerprint { size: i64_to_u64(s), mtime_ns: m, ctime_ns: c })
         }
         _ => None,
     };
 
-    Ok(Ok(FileRecord {
+    Ok(FileRecord {
         id: row.get(0)?,
-        key: FileKey { sub_id: SubId(blob16(row, 1, "sub_id")?), ino: i64_to_u64(row.get(2)?) },
+        key: key_from(row, 1, 2)?,
         domain_id: DomainId(blob16(row, 3, "domain_id")?),
         loc: FileLoc { root_id: row.get(4)?, rel_path: PathBuf::from(row.get::<_, String>(5)?) },
         owner_uid: row.get(6)?,
@@ -111,8 +145,8 @@ pub fn file_from_row(row: &Row<'_>) -> Result<Result<FileRecord, DbError>, rusql
         mtime_ns: row.get(9)?,
         ctime_ns: row.get(10)?,
         nlink: row.get(11)?,
-        state,
-        prev_state,
+        state: parse_col::<State>(row, 12, "state")?,
+        prev_state: parse_col_opt::<State>(row, 13, "prev_state")?,
         ready_at: row.get(14)?,
         priority: row.get(15)?,
         heavy_wait_since: row.get(16)?,
@@ -130,7 +164,7 @@ pub fn file_from_row(row: &Row<'_>) -> Result<Result<FileRecord, DbError>, rusql
         first_seen_at: row.get(30)?,
         last_seen_at: row.get(31)?,
         updated_at: row.get(32)?,
-    }))
+    })
 }
 
 #[cfg(test)]
@@ -154,9 +188,9 @@ mod tests {
     }
 
     #[test]
-    fn path_chuan_hoa_dau_gach_cheo() {
-        // Máy dev là Windows nhưng DB lưu đường dẫn của NAS Linux.
+    fn path_giu_nguyen_dau_gach_nguoc() {
         assert_eq!(path_to_text(Path::new("phim/a.mp4")), "phim/a.mp4");
-        assert_eq!(path_to_text(Path::new(r"phim\a.mp4")), "phim/a.mp4");
+        // Trên Linux đây là **một** tên file, không phải `a.mp4` trong thư mục `phim`.
+        assert_eq!(path_to_text(Path::new(r"phim\a.mp4")), r"phim\a.mp4");
     }
 }

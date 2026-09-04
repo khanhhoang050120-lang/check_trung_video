@@ -2,6 +2,41 @@
 
 ---
 
+## CFG-007 — Module bật bằng feature không nhận `cfg_attr(test, ...)`
+
+**Ngày:** 2026-09-04 · **Phase:** 1 · **Nơi:** `crates/core/src/repo/conformance/`
+
+**Triệu chứng.** `cargo clippy -p nasdedup-core --all-targets` sạch, `cargo test` sạch, nhưng
+`cargo clippy --workspace --all-targets` đỏ hơn 140 lỗi `unwrap_used`/`expect_used` — tất cả đều
+nằm trong bộ test tương thích của chính `nasdedup-core`.
+
+**Nguyên nhân gốc.** Bộ test tương thích được bật bằng:
+
+```rust
+#[cfg(any(test, feature = "test-support"))]
+pub mod conformance;
+```
+
+Khi `nasdedup-db` khai báo `nasdedup-core = { features = ["test-support"] }` trong
+`[dev-dependencies]`, Cargo biên dịch `nasdedup-core` như một **thư viện bình thường** có thêm
+feature đó — tức là **không** có `cfg(test)`. Dòng `#![cfg_attr(test, allow(...))]` ở đầu `lib.rs`
+vì thế không với tới, và lint của workspace áp dụng đầy đủ lên mã test.
+
+**Cách sửa.** Cho phép ngay tại chỗ khai báo module, không phụ thuộc `cfg(test)`:
+
+```rust
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+pub mod conformance;
+```
+
+**Bài học.** `cfg(test)` chỉ đúng cho *crate đang được test*. Mọi mã test **xuất khẩu cho crate khác**
+(qua feature) sống ngoài `cfg(test)` và phải tự khai báo lint của nó. Đây là loại thứ tư bên cạnh ba loại
+đã ghi ở CFG-005. Và: chỉ chạy clippy cho một package không đủ, cổng chất lượng phải là
+`--workspace --all-targets`.
+
+---
+
 ## CFG-005 — File trong `tests/` không nhận `cfg_attr(test, ...)` của `lib.rs`
 
 **Ngày:** 2026-09-03 · **Phase:** 1

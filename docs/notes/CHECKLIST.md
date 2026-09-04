@@ -32,6 +32,16 @@ Cả ba phải xanh. Ngoài ra:
 - [ ] Thời gian chạy có hợp lý không? Xong quá nhanh thường nghĩa là một nhóm việc đã bị bỏ qua hoặc gãy sớm.
 - [ ] Nếu đỏ, xem từng nhóm việc qua `runs/<id>/jobs` để biết bước nào gãy trước khi đoán nguyên nhân.
 
+## Khi có hai bản cài đặt cùng một trait
+
+Bộ test tương thích dùng chung là điều kiện cần, **không đủ**: nó chỉ chứng minh hai bản khớp nhau trên những đầu vào người viết nghĩ tới. Xem BUG-009 và BUG-011 — ba lỗi và chín chỗ lệch lọt qua 38 kịch bản viết tay.
+
+- [ ] **So theo ma trận**: chạy mọi tổ hợp của các trường quyết định (ví dụ `state × prev_state × skip_reason × fingerprint`) qua cả hai bản, so **từng cột** của kết quả, in ra chỗ lệch.
+- [ ] **Fuzz vi phân** cho hàm phức tạp nhất (ở đây là `apply`): sinh chuỗi thao tác ngẫu nhiên, so trạng thái cuối.
+- [ ] Đầu vào biên của mọi tham số kiểu đường dẫn: rỗng, có `/` ở cuối, chứa `\`, nhiều byte.
+- [ ] Chạy lại cả hai kỹ thuật **mỗi lần thêm một hàm vào trait**, không phải một lần rồi thôi.
+- [ ] Mỗi chỗ lệch tìm được phải thành một kịch bản trong bộ test tương thích, và phải kiểm chứng rằng kịch bản đó **đỏ** khi hoàn tác bản sửa.
+
 ## Trước khi chuyển sang phase tiếp theo
 
 - [ ] Toàn bộ tiêu chí hoàn thành của phase trong mục 11 của bản đặc tả đã đạt, từng mục một.

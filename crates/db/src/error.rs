@@ -11,6 +11,10 @@ pub enum DbError {
     Migration(String),
     #[error("giá trị không hợp lệ trong DB: {0}")]
     Decode(String),
+    /// Ràng buộc của tầng ứng dụng (root/group/journal không tồn tại) — không
+    /// phải mọi ràng buộc đều tới từ SQLite, nên có biến thể riêng.
+    #[error("vi phạm ràng buộc: {0}")]
+    Constraint(String),
     #[error("DB actor đã dừng")]
     ActorGone,
 }
@@ -36,6 +40,7 @@ impl From<DbError> for RepoError {
                 Self::Corrupt(msg.unwrap_or_else(|| "database hỏng".to_owned()))
             }
             DbError::Decode(m) => Self::Corrupt(m),
+            DbError::Constraint(m) => Self::Constraint(m),
             other => Self::Other(other.to_string()),
         }
     }

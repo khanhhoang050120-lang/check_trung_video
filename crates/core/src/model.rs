@@ -517,6 +517,10 @@ pub struct Root {
     pub kind: RootKind,
     /// Nhãn hiển thị trong report, ví dụ `windows-214` (spec 1.5).
     pub label: Option<String>,
+    /// Đường dẫn UNC của share trên máy Windows, ví dụ `\\192.168.1.214\Video`.
+    /// Bắt buộc khai tường minh nếu muốn app mở Explorer; **không bao giờ** suy đoán
+    /// từ mount point (bản chốt mục 1).
+    pub windows_unc: Option<String>,
     pub active: bool,
     pub added_at: Ts,
 }

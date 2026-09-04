@@ -34,8 +34,16 @@ CREATE TABLE roots (
   domain_id BLOB NOT NULL,
   kind TEXT NOT NULL DEFAULT 'local' CHECK (kind IN ('local','remote')),
   label TEXT,
+  windows_unc TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   added_at INTEGER NOT NULL
+);
+
+CREATE TABLE group_notes (
+  group_id INTEGER PRIMARY KEY REFERENCES content_groups(id),
+  handled_at INTEGER NOT NULL,
+  note TEXT NOT NULL,
+  by_device_id TEXT
 );
 
 CREATE TABLE content_groups (

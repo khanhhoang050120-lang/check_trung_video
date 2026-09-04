@@ -256,3 +256,35 @@ mod tests {
         assert_eq!(reason_for(State::Deduped, State::Skipped), Some(Reason::UserUndo));
     }
 }
+
+#[cfg(test)]
+mod restore_target_tests {
+    use super::*;
+    use crate::model::State;
+
+    /// Danh sách này được nhân bản nguyên văn trong câu UPSERT của `nasdedup-db`
+    /// (`queue.rs`). Nếu bảng 4.4 đổi mà quên sửa SQL, test này đỏ trước.
+    #[test]
+    fn danh_sach_khoi_phuc_khop_voi_sql() {
+        let tu_bang: Vec<&str> = State::ALL
+            .into_iter()
+            .filter(|s| restore_target(Some(*s)) == *s)
+            .map(State::as_str)
+            .collect();
+        assert_eq!(
+            tu_bang,
+            vec![
+                "settling",
+                "sized",
+                "hashed",
+                "verified",
+                "deduped",
+                "distinct",
+                "canonical",
+                "skipped",
+                "failed"
+            ],
+            "sửa cả hằng RESTORE_TARGET trong crates/db/src/queue.rs"
+        );
+    }
+}

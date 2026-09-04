@@ -222,6 +222,10 @@ pub struct RemoteRootCfg {
     /// Nhãn hiển thị trong report, ví dụ `windows-214`.
     #[serde(default)]
     pub label: Option<String>,
+    /// Đường dẫn UNC của share, ví dụ `\\192.168.1.214\Video`. Thiếu thì app ẩn
+    /// nút mở Explorer thay vì suy đoán (bản chốt mục 1).
+    #[serde(default)]
+    pub windows_unc: Option<String>,
 }
 
 /// `[watch]`
@@ -572,6 +576,15 @@ impl Config {
         out
     }
 
+    /// Đường dẫn file DB: `state_dir/nasdedup.db` (spec 4.2).
+    ///
+    /// WAL và SHM nằm cùng thư mục, nên `state_dir` phải là 0700 và ưu tiên
+    /// SSD/system partition chứ không nằm trên chính volume dữ liệu.
+    #[must_use]
+    pub fn db_path(&self) -> PathBuf {
+        self.general.state_dir.join("nasdedup.db")
+    }
+
     /// Retention của `dedup_events` tính bằng milliseconds.
     #[must_use]
     pub fn retention_ms(&self) -> i64 {
@@ -755,6 +768,7 @@ remote_verify = "hash_only"
                 remote_roots: vec![RemoteRootCfg {
                     path: PathBuf::from("/mnt/win214"),
                     label: None,
+                    windows_unc: None,
                 }],
                 ..Default::default()
             },
@@ -783,6 +797,7 @@ remote_verify = "hash_only"
                 remote_roots: vec![RemoteRootCfg {
                     path: PathBuf::from("/mnt/win214"),
                     label: None,
+                    windows_unc: None,
                 }],
                 ..Default::default()
             },
@@ -800,6 +815,7 @@ remote_verify = "hash_only"
                 remote_roots: vec![RemoteRootCfg {
                     path: PathBuf::from("/volume1/win"),
                     label: None,
+                    windows_unc: None,
                 }],
                 ..Default::default()
             },
@@ -816,6 +832,7 @@ remote_verify = "hash_only"
                 remote_roots: vec![RemoteRootCfg {
                     path: PathBuf::from("/mnt/win214"),
                     label: None,
+                    windows_unc: None,
                 }],
                 ..Default::default()
             },

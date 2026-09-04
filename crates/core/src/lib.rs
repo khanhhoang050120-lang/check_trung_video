@@ -11,6 +11,8 @@
 //! - [`config`]: file `config.toml` (spec mục 6) với `validate()` thuần.
 //! - [`fs`], [`repo`], [`dedupe`], [`throttle`], [`events`]: các trait mà crate
 //!   `nasdedup-linux` và `nasdedup-db` cài đặt.
+//! - [`recovery`]: quyết định khôi phục `dedup_journal` lúc boot, viết thuần để
+//!   nhánh nguy hiểm nhất cũng test được không cần filesystem.
 //!
 //! Bất biến quan trọng nhất (spec 1.2): việc chia sẻ extent chỉ xảy ra sau khi
 //! kernel (hoặc daemon trong lúc giữ lease) đã xác nhận hai file giống nhau
@@ -23,6 +25,7 @@ pub mod dedupe;
 pub mod events;
 pub mod fs;
 pub mod model;
+pub mod recovery;
 pub mod repo;
 pub mod state;
 pub mod throttle;

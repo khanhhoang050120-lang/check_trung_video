@@ -4,6 +4,122 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-011 — Chín chỗ lệch nữa giữa hai bản `Repository`, tìm bằng rà soát nhiều tác nhân
+
+**Ngày:** 2026-09-04 · **Phase:** 1 · **Nơi:** `crates/core/src/repo/memory/`, `crates/db/src/`
+
+Sau BUG-009 và BUG-010, một vòng rà soát năm hướng (mỗi hướng một tác nhân đọc song
+song hai bản cài đặt, rồi một vòng phản biện) tìm thêm chín chỗ lệch. Không chỗ nào bị
+38 kịch bản tương thích lúc đó bắt được. Tất cả đã sửa; mỗi chỗ có một kịch bản mới.
+
+| # | Triệu chứng | Bản sai | Vì sao nguy hiểm |
+| :-- | :--- | :--- | :--- |
+| 1 | `rename` với khóa không tồn tại vẫn kịp đánh `missing` row đang chiếm chỗ đích | bộ nhớ | Trait nói "cùng transaction"; bản SQLite rollback, bản bộ nhớ thì không. Một row đang chạy bị đẩy ra khỏi hàng đợi bởi một thao tác **đã báo lỗi**. |
+| 2 | Tiền tố thư mục rỗng (cả root) khớp 0 row | SQLite | `rel_path` rỗng = cả root là quy ước sẵn có (`requeue_verified`). Khoảng `'/' .. '0'` không chứa đường dẫn nào, nên `mark_missing_prefix` và `rename_prefix` im lặng không làm gì. |
+| 3 | Tiền tố có `/` ở cuối khớp 0 row | SQLite | `"test/"` sinh cận dưới `test//`, nằm sau `test/a.mp4` theo thứ tự byte. |
+| 4 | `rename_prefix` vào thư mục đích rỗng sinh `rel_path` bắt đầu bằng `/` | SQLite | Đường dẫn tuyệt đối nằm trong cột chứa đường dẫn tương đối: từ đó không truy vấn nào tìm lại được row. |
+| 5 | `events` cùng một millisecond xếp ngược nhau | bộ nhớ | `Ts` là millisecond, nhiều sự kiện chung mốc là bình thường. `audit --limit N` trả về **hàng khác nhau** tùy bản cài đặt. |
+| 6 | `purge` xóa file `gone` nhưng để `canonical_file_id` trỏ vào id đã biến mất | cả hai | Spec 5.4 chỉ bầu lại canonical khi con trỏ NULL hoặc file canonical `missing`; trỏ vào id không tồn tại không nằm trong danh sách, nên nhóm kẹt vĩnh viễn và thành viên còn lại nằm mãi ở `hashed`. |
+| 7 | `root_upsert` với id tường minh đã bị path khác chiếm | SQLite | Lỗi `UNIQUE constraint failed` trong khi bản bộ nhớ cấp id mới. Đăng ký root là bước 4 lúc khởi động, nên daemon không boot được. |
+| 8 | `Patch.group_id` trỏ vào nhóm không tồn tại | bộ nhớ | SQLite có khóa ngoại nên từ chối cả transition; bản bộ nhớ ghi một con trỏ treo và trả `Ok`. |
+| 9 | `presence_seen` tra `roots` cho mọi entry thay vì chỉ khi cần khôi phục | bộ nhớ | Một entry trỏ vào root lạ làm đổ cả lô ở bản này và bị bỏ qua ở bản kia. |
+
+Cùng vòng đó còn một chỗ không phải lệch mà là hỏng dữ liệu: `path_to_text` đổi `\` thành
+`/` trước khi lưu. Trên NAS Linux, `\` là ký tự tên file hợp lệ, nên phép đổi này gộp hai
+file khác nhau (`x/y` và `x\y`) vào cùng một `(root_id, rel_path)` và khiến vị từ "nằm
+dưới thư mục" coi `phim\a.mp4` là con của `phim`. Đã bỏ; chỗ duy nhất từng cần chuyển đổi
+là phép **ghép** đường dẫn, và cả hai bản nay đều ghép bằng chuỗi với `/` (BUG-010).
+
+**Bài học.** Xem lại BUG-009: bộ test tương thích chỉ chứng minh hai bản khớp nhau trên
+những đầu vào nó nghĩ tới. Ba kỹ thuật bổ sung đã trả công:
+
+1. **So theo ma trận** — chạy mọi tổ hợp `(state × prev_state × skip_reason × fingerprint)`
+   qua cả hai bản rồi so **từng cột**. Tìm ra BUG-009.
+2. **Fuzz vi phân** cho `apply`.
+3. **Rà soát đối nghịch** — mỗi phát hiện phải qua một vòng phản biện với mặc định "sai".
+   Vòng này bác bốn phát hiện và giữ lại chín cái ở trên.
+
+Kỹ thuật 1 và 2 nên chạy lại mỗi khi thêm một hàm vào `Repository`, chứ không chỉ một lần.
+
+---
+
+
+## BUG-010 — `PathBuf::join` làm hai bản cài đặt lệch nhau chỉ trên Windows
+
+**Ngày:** 2026-09-04 · **Phase:** 1 · **Nơi:** `crates/core/src/repo/memory/watch.rs`
+
+**Triệu chứng.** Bộ test tương thích xanh trên cả hai bản cài đặt, nhưng một probe so
+từng trường phát hiện `rename_prefix` cho kết quả khác nhau:
+
+| Đầu vào | Bản bộ nhớ (Windows) | Bản SQLite |
+| :--- | :--- | :--- |
+| đổi `cu/` sang root khác | `v\a.mp4` | `v/a.mp4` |
+| `old_dir` trỏ thẳng vào một file | `phim/b.mp4\` | `phim/b.mp4` |
+
+**Nguyên nhân gốc.** `new_dir.rel_path.join(rest)` dùng dấu phân cách **của nền tảng
+đang chạy**. Trên Linux nó là `/` nên hai bản trùng nhau; trên Windows nó là `\`.
+Ngoài ra `Path::join("")` còn thêm một dấu phân cách vào cuối. Bản SQLite không có vấn
+đề này vì `path_to_text` luôn đổi `\` thành `/`.
+
+**Vì sao nguy hiểm.** Đường dẫn trong DB mô tả filesystem trên NAS Linux; máy Windows
+chỉ là nơi chạy test và giao diện. Một khác biệt **chỉ xuất hiện trên một nền tảng**
+nghĩa là CI Windows và CI Linux khẳng định hai hành vi khác nhau mà cả hai đều xanh —
+xem BUG-008 cho một biến thể khác của cùng loại bẫy.
+
+**Cách sửa.** Hàm `noi_duong_dan` nối chuỗi, luôn dùng `/`, và trả `dir` nguyên vẹn khi
+phần đuôi rỗng. Thêm kịch bản `rename_prefix_mot_file_va_doi_root` vào bộ test tương thích.
+
+**Bài học.** Trong crate lõi, `PathBuf` chỉ là chỗ chứa; mọi phép **ghép** đường dẫn của
+hệ thống đích phải làm trên chuỗi với `/`.
+
+---
+
+## BUG-009 — Câu UPSERT lệch `rules.rs` ở cột `ready_at`, làm row kẹt vĩnh viễn
+
+**Ngày:** 2026-09-04 · **Phase:** 1 · **Nơi:** `crates/db/src/queue.rs`
+
+**Triệu chứng.** Cả 38 kịch bản tương thích xanh. Một probe quét toàn bộ ma trận
+`(state × prev_state × skip_reason × fingerprint)` rồi so từng cột giữa hai bản cài đặt
+tìm ra ba chỗ lệch, tất cả đều ở `ready_at`.
+
+**Nguyên nhân gốc — ba lỗi độc lập.**
+
+1. **Row kẹt vĩnh viễn (nặng nhất).** Cột `state` xét `prev_state` rồi rơi về `settling`
+   khi không khôi phục được, nhưng cột `ready_at` lại xét thẳng `prev_state`:
+
+   ```sql
+   ready_at = CASE WHEN files.prev_state IN ('settling','sized','hashed')
+                   THEN excluded.ready_at ELSE NULL END   -- SAI
+   ```
+
+   Với `state = 'missing'`, `prev_state = 'missing'` và fingerprint không đổi, `state`
+   ra `settling` còn `ready_at` ra `NULL`. `next_ready` lọc `ready_at IS NOT NULL`, nên
+   row nằm trong hàng đợi mà **không bao giờ** được nhặt — không lỗi, không log, chỉ
+   biến mất khỏi pipeline. Điều kiện phải bám vào state **đã khôi phục**, đúng như
+   `decide_upsert` viết `if state.is_queued()`.
+
+2. **Nhánh `user_undo` tự thêm.** Câu SQL giữ `ready_at` cũ cho row `user_undo`;
+   `decide_upsert` không có nhánh đó. Không nguy hiểm (row `skipped` không vào hàng đợi)
+   nhưng là lệch, và lệch thì sớm muộn cũng thành lỗi.
+
+3. **Nhóm mất gốc oan.** Câu `UPDATE content_groups SET canonical_file_id = NULL` chạy
+   sau **mọi** upsert, điều kiện chỉ là "row hiện không thuộc nhóm nào". Bản bộ nhớ chỉ
+   xóa khi *chính lần upsert này* đẩy row ra khỏi nhóm. Với một canonical mồ côi từ
+   trước, một sự kiện của chính daemon (fingerprint không đổi) cũng làm nhóm mất gốc.
+
+**Cách sửa.** Tách biểu thức khôi phục thành hằng `RESTORED` dùng chung cho cả hai cột;
+bỏ nhánh `user_undo`; đọc `group_id` cũ trong **cùng transaction** rồi chỉ xóa canonical
+khi nó chuyển từ `Some` sang `None`.
+
+**Bài học.** Bộ test tương thích chứng minh hai bản cài đặt khớp nhau **trên những đầu
+vào nó nghĩ tới**. Với logic viết hai lần bằng hai ngôn ngữ, phải có thêm một phép so
+kiểu ma trận hoặc fuzz vi phân — nó tìm ra ba lỗi mà 38 kịch bản viết tay bỏ sót. Ba
+kịch bản mới đã được thêm để khóa lại. Ngoài ra: `state::restore_target_tests::danh_sach_khoi_phuc_khop_voi_sql`
+buộc danh sách state trong SQL phải khớp bảng 4.4 khi bảng đổi.
+
+---
+
+
 ## BUG-008 — Mã chết chỉ xuất hiện trên một nền tảng
 
 **Ngày:** 2026-09-03 · **Phase:** 1 · **Nơi:** `crates/daemon/src/platform/`

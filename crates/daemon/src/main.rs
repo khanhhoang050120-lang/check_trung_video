@@ -3,6 +3,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod cli;
+mod cmd;
 mod platform;
 
 use std::path::Path;
@@ -13,7 +14,7 @@ use clap::Parser;
 use nasdedup_core::Config;
 use tracing_subscriber::EnvFilter;
 
-use cli::{Cli, Command, DbAction};
+use cli::{Cli, Command};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -52,7 +53,10 @@ fn dispatch(cli: &Cli) -> Result<()> {
             platform::undo(&cfg, path)
         }
         Command::Check { a, b } => cmd_check(a, b),
-        Command::Db { action } => cmd_db(action),
+        Command::Db { action } => {
+            let cfg = load_config(&cli.config)?;
+            cmd::db::run(&cfg, action)
+        }
         Command::Status { .. }
         | Command::Report { .. }
         | Command::Explain { .. }
@@ -104,9 +108,14 @@ fn cmd_check(a: &Path, b: &Path) -> Result<()> {
     anyhow::bail!("check chưa được cài đặt đầy đủ: xem mục 11, Phase 2 của bản đặc tả")
 }
 
-fn cmd_db(action: &DbAction) -> Result<()> {
-    let _ = action;
-    anyhow::bail!("các lệnh db chưa được cài đặt: xem mục 11, Phase 1 của bản đặc tả")
+/// Thời điểm hiện tại theo millisecond epoch (`Ts` của core).
+///
+/// Đồng hồ chạy lùi (NTP) chỉ làm lệch `updated_at`, không phá bất biến nào, nên
+/// dùng `UNIX_EPOCH` đơn giản thay vì đồng hồ đơn điệu.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]

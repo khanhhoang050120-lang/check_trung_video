@@ -4,6 +4,45 @@ Mỗi mục: quyết định gì, vì sao, đã loại phương án nào. Không
 
 ---
 
+## DEC-015 — Lệnh quản trị `db` không nằm trong trait `Repository`
+
+**Ngày:** 2026-09-04 · **Phase:** 1
+
+`stats`, `rebuild`, `unskip` là hàm tự do trong `nasdedup-db::admin`, nhận `&Connection`, chứ không
+phải phương thức của `Repository`.
+
+**Vì sao.** Chúng không thuộc pipeline: chúng mở thẳng file DB khi daemon đang dừng. Đưa vào trait thì
+`MemoryRepository` phải giả lập `pragma_page_count` và ngữ nghĩa "xóa cache nhưng giữ ledger" — công sức
+bỏ ra để mô phỏng những thứ chỉ có nghĩa với một file thật, mà không test thêm được gì.
+
+**Hệ quả.** Khi Phase 3 mở control socket, nếu muốn gọi các lệnh này lúc daemon **đang chạy** thì phải
+đẩy chúng qua actor (thêm hàm trên `DbHandle`), chứ không phải mở lại file DB lần hai.
+
+---
+
+## DEC-014 — Vòng đời DB actor do chính `DbHandle` giữ, không có kiểu `DbActor` riêng
+
+**Ngày:** 2026-09-04 · **Phase:** 1
+
+Bản đầu có hai kiểu: `DbActor` (sở hữu thread) và `DbHandle` (bản sao gửi cho thread khác), cả hai đều
+`impl Repository`. Đã bỏ `DbActor`; giờ chỉ còn `DbHandle`, bên trong là `Arc<Inner>` với `Inner` giữ
+`Sender` và `JoinHandle`. Bản sao cuối cùng biến mất → `Sender` đóng → vòng lặp chạy nốt việc đã xếp hàng
+rồi thoát → `Drop` chờ thread kết thúc.
+
+**Vì sao.**
+
+1. Hai kiểu nghĩa là hai `impl Repository` gần 250 dòng khuôn mẫu trùng nhau, đẩy `actor.rs` lên 506 dòng,
+   vượt hạn mức 400 dòng của mục 3.2.
+2. `DbActor::shutdown()` cho phép tắt DB **trong khi** một thread khác còn cầm `DbHandle`. Với `Arc`,
+   trạng thái đó không biểu diễn được.
+3. Không cần biến thể `Stop` trong channel: đóng `Sender` đã là tín hiệu dừng, và nó dừng **sau** khi
+   hàng đợi cạn chứ không cắt ngang.
+
+**Đánh đổi.** Không còn cách tắt DB một cách tường minh; daemon phải thả handle cuối cùng. Đổi lại,
+`checkpoint()` gọi tường minh trước khi thoát vẫn đủ để đóng WAL sạch.
+
+---
+
 ## DEC-008 — Giao diện là ứng dụng desktop Windows, không phải web UI
 
 **Ngày:** 2026-09-03 · **Người quyết:** chủ dự án
