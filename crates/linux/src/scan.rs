@@ -329,17 +329,26 @@ mod tests {
     #[test]
     fn con_tro_bo_qua_thu_muc_da_xong_nhung_khong_bo_sot_ten_gan_giong() {
         // Đúng test (11) của spec mục 10: `a/` và `a-b`.
-        let b = ban(&[("a/x.mp4", 100), ("a-b/y.mp4", 100), ("z/w.mp4", 100)]);
+        //
+        // Con trỏ `a/z` nghĩa là "đã quét xong tới thư mục a/z". Quy tắc:
+        //
+        // - `0cu` nằm hoàn toàn phía trước → bỏ cả cây con.
+        // - `a` là **tổ tiên** của con trỏ → phải đi vào, vì phần dở dang nằm bên
+        //   trong nó. File nằm ngay trong `a` vì thế được duyệt lại; vô hại, vì
+        //   `scan_insert` bỏ qua khóa đã có.
+        // - `a-b` nằm **sau** con trỏ theo thứ tự thành phần (`a-b` > `a`) nên
+        //   không được bỏ. Đây chính là chỗ bản so chuỗi sai: theo byte thì
+        //   `"a-b" < "a/z"` và cả thư mục này biến mất khỏi thư viện.
+        let b =
+            ban(&[("0cu/old.mp4", 100), ("a/x.mp4", 100), ("a-b/y.mp4", 100), ("z/w.mp4", 100)]);
         let kq = quet(&b, Some(Path::new("a/z")));
 
-        // `a/` nằm trước con trỏ và không phải tổ tiên → bỏ. `a-b` và `z` thì không.
-        assert!(b.repo.find_by_path(&FileLoc::new(1, "a/x.mp4")).unwrap().is_none(), "a/ đã xong");
-        assert!(
-            b.repo.find_by_path(&FileLoc::new(1, "a-b/y.mp4")).unwrap().is_some(),
-            "a-b chưa quét, không được bỏ sót"
-        );
-        assert!(b.repo.find_by_path(&FileLoc::new(1, "z/w.mp4")).unwrap().is_some());
-        assert_eq!(kq.da_them, 2);
+        let co = |rel: &str| b.repo.find_by_path(&FileLoc::new(1, rel)).unwrap().is_some();
+        assert!(!co("0cu/old.mp4"), "0cu nằm trước con trỏ, phải bỏ cả cây con");
+        assert!(co("a-b/y.mp4"), "a-b chưa quét — đây là lỗi mà so chuỗi gây ra");
+        assert!(co("z/w.mp4"), "z nằm sau con trỏ");
+        assert!(co("a/x.mp4"), "a là tổ tiên con trỏ nên được duyệt lại");
+        assert_eq!(kq.da_them, 3, "chỉ 0cu bị bỏ");
     }
 
     #[test]

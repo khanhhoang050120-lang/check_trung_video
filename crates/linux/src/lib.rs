@@ -14,9 +14,11 @@
 
 pub mod diskstats;
 pub mod fsdetect;
+pub mod governor;
 pub mod ioctl;
 pub mod open;
 pub mod prio;
 pub mod scan;
 
+pub use governor::NasGovernor;
 pub use open::LinuxFs;

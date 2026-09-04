@@ -20,6 +20,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod busy;
 pub mod config;
 pub mod dedupe;
 pub mod events;
