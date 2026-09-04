@@ -9,8 +9,8 @@ use nasdedup_core::model::{
     ScanProgress, Ts, Volume,
 };
 use nasdedup_core::repo::{
-    DedupEvent, EventFilter, GroupNote, JournalRow, RepoError, Repository, Scope, Transition,
-    UpsertResult,
+    DedupEvent, EventFilter, GroupNote, JournalRow, RepoError, Repository, ScanRow, Scope,
+    Transition, UpsertResult,
 };
 
 use super::DbHandle;
@@ -33,6 +33,11 @@ impl Repository for DbHandle {
     ) -> Result<UpsertResult, RepoError> {
         let (id, loc) = (*id, loc.clone());
         forward!(self, |r| r.upsert_pending(&id, &loc, ready_at, priority, now))
+    }
+
+    fn scan_insert(&self, rows: &[ScanRow], now: Ts) -> Result<u64, RepoError> {
+        let rows = rows.to_vec();
+        forward!(self, |r| r.scan_insert(&rows, now))
     }
 
     fn next_ready(

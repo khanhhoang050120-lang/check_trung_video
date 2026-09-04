@@ -33,6 +33,7 @@ pub mod repo;
 pub mod scan;
 pub mod state;
 pub mod throttle;
+pub mod window;
 pub mod worker;
 
 pub use config::Config;

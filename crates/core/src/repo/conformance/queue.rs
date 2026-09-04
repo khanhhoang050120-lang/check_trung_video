@@ -390,3 +390,63 @@ pub fn upsert_canonical_mo_coi_khong_bi_dung(repo: &dyn Repository) {
         "fingerprint không đổi thì nhóm không được mất gốc"
     );
 }
+
+/// `scan_insert` đặt thẳng state, và **không đụng** row đã có (spec 5.10 pha A).
+pub fn scan_insert_dat_thang_state_va_bo_qua_row_da_co(repo: &dyn Repository) {
+    use crate::repo::ScanRow;
+
+    let a = ident(1, 100, 5, 5);
+    let b = ident(2, 200, 6, 6);
+    let rows = vec![
+        // File đã đủ già: vào thẳng `sized`, chưa xếp hàng.
+        ScanRow { id: a, loc: loc("a.mp4"), state: State::Sized, ready_at: None, priority: 2 },
+        // File còn mới: `settling` với hẹn.
+        ScanRow {
+            id: b,
+            loc: loc("b.mp4"),
+            state: State::Settling,
+            ready_at: Some(NOW + DELAY),
+            priority: 2,
+        },
+    ];
+    assert_eq!(repo.scan_insert(&rows, NOW).unwrap(), 2);
+
+    let ra = get(repo, &a.key);
+    assert_eq!(ra.state, State::Sized, "không phải đi qua bước ổn định");
+    assert_eq!(ra.ready_at, None, "chờ pha B đánh thức");
+    assert_eq!(ra.priority, 2);
+    assert_eq!(ra.enq, Some(a.fingerprint()), "snapshot lúc xếp hàng vẫn phải có");
+
+    let rb = get(repo, &b.key);
+    assert_eq!(rb.state, State::Settling);
+    assert_eq!(rb.ready_at, Some(NOW + DELAY));
+
+    // Quét lại: row đã có thì không đụng gì, kể cả khi lô mới nói state khác.
+    let row_a_truoc = get(repo, &a.key);
+    let lai = vec![ScanRow {
+        id: a,
+        loc: loc("a.mp4"),
+        state: State::Settling,
+        ready_at: Some(NOW + 99),
+        priority: 0,
+    }];
+    assert_eq!(repo.scan_insert(&lai, NOW + 10).unwrap(), 0, "không chèn thêm");
+    let sau = get(repo, &a.key);
+    assert_eq!(sau.state, row_a_truoc.state, "quét lại không được đặt lại tiến độ");
+    assert_eq!(sau.ready_at, row_a_truoc.ready_at);
+    assert_eq!(sau.priority, row_a_truoc.priority);
+}
+
+/// `scan_insert` với root chưa đăng ký bị từ chối, giống `upsert_pending`.
+pub fn scan_insert_root_chua_dang_ky_bi_tu_choi(repo: &dyn Repository) {
+    use crate::repo::ScanRow;
+    let rows = vec![ScanRow {
+        id: ident(1, 100, 5, 5),
+        loc: crate::model::FileLoc::new(77, "x.mp4"),
+        state: State::Sized,
+        ready_at: None,
+        priority: 2,
+    }];
+    let e = repo.scan_insert(&rows, NOW);
+    assert!(matches!(e, Err(crate::repo::RepoError::Constraint(_))), "{e:?}");
+}

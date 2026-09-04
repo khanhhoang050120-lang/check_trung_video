@@ -1,6 +1,6 @@
 //! Kiểu dữ liệu đi kèm trait `Repository` (spec 3.3).
 
-use crate::model::{FileKey, Fingerprint, Identity, JournalState, State, Ts};
+use crate::model::{FileKey, FileLoc, Fingerprint, Identity, JournalState, State, Ts};
 
 /// Thay đổi từng phần cho một row `files`.
 ///
@@ -255,6 +255,18 @@ impl DedupEvent {
             duration_ms: None,
         }
     }
+}
+
+/// Một row do initial scan sinh ra (spec 5.10 pha A).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanRow {
+    pub id: Identity,
+    pub loc: FileLoc,
+    /// `sized` (đã đủ già) hoặc `settling` (còn phải chờ) — xem `scan::khoi_dau`.
+    pub state: State,
+    /// `None` với `sized`: chờ pha B đánh thức nếu có file cùng kích thước.
+    pub ready_at: Option<Ts>,
+    pub priority: u8,
 }
 
 /// Bộ lọc truy vấn `dedup_events` (CLI `audit`).

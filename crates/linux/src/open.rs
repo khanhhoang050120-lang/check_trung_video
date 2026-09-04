@@ -48,7 +48,13 @@ impl LinuxFs {
         let mut m = HashMap::new();
         for (id, path, kind) in roots {
             let dirfd = mo_dir(&path)?;
-            let info = fsdetect::nhan_dang(dirfd.as_fd())?;
+            // Nhận dạng qua **đường dẫn**, không qua `dirfd`: `dirfd` mở bằng
+            // `O_PATH` (spec 5.6 bước 1) và mọi `ioctl` trên nó trả `EBADF`, nên
+            // `domain_id` sẽ lặng lẽ tụt xuống `f_fsid` trong khi phần còn lại của
+            // chương trình dùng UUID thật. Hai giá trị khác nhau cho cùng một
+            // filesystem làm scanner tưởng mọi thư mục con là ranh giới mount và bỏ
+            // qua sạch — không lỗi, không log.
+            let info = fsdetect::nhan_dang_path(&path)?;
             let dev_ino = fsdetect::dev_ino(dirfd.as_fd())?;
             m.insert(id, Root { dirfd, path, kind, info, dev_ino });
         }
@@ -600,5 +606,21 @@ mod tests {
         let info = fs.info(1).expect("có thông tin");
         assert_ne!(info.domain_id.as_bytes(), &[0_u8; 16]);
         assert!(fs.root_path(1).is_some());
+    }
+
+    #[test]
+    fn domain_id_cua_root_khop_voi_cach_tra_theo_duong_dan() {
+        // Bất biến sống còn của scanner: `domain_id` phải **không** phụ thuộc vào
+        // cách mở fd. Trước đây `LinuxFs` tra qua `dirfd` mở `O_PATH`, nơi mọi ioctl
+        // trả `EBADF`, nên nó tụt xuống `f_fsid` trong khi `scan` lại tra theo đường
+        // dẫn và nhận UUID thật. Hai giá trị khác nhau khiến scanner coi mọi thư mục
+        // con là ranh giới mount và bỏ qua toàn bộ thư viện.
+        let (d, fs) = ban_thu();
+        let theo_path = crate::fsdetect::nhan_dang_path(d.path()).expect("nhận dạng");
+        assert_eq!(fs.info(1).expect("info").domain_id, theo_path.domain_id);
+
+        // Và cho cả thư mục con, vì scanner so từng thư mục một.
+        let con = crate::fsdetect::nhan_dang_path(&d.path().join("phim")).expect("con");
+        assert_eq!(con.domain_id, theo_path.domain_id, "cùng FS thì cùng miền");
     }
 }

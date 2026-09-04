@@ -39,11 +39,15 @@ Máy dev chạy Windows. `crates/linux/src/lib.rs` bắt đầu bằng `#![cfg(t
 Đã có target Linux cài sẵn, và `cargo check` **không cần linker**, nên kiểm được tại chỗ:
 
 ```bash
-cargo check  --target x86_64-unknown-linux-gnu -p nasdedup-linux
-cargo clippy --target x86_64-unknown-linux-gnu -p nasdedup-linux --all-targets -- -D warnings
+for t in x86_64-unknown-linux-gnu x86_64-unknown-linux-musl; do
+  cargo clippy --target $t -p nasdedup-linux --all-targets -- -D warnings
+done
 ```
 
-- [ ] Chạy hai lệnh trên sau **mỗi** lần sửa `crates/linux/`, không đợi tới lúc commit.
+**Phải chạy cả hai target.** glibc và musl khai báo `libc` khác nhau ở những chỗ bất ngờ — `libc::ioctl` nhận `c_ulong` ở bản này và `c_int` ở bản kia, `statfs.f_type` là `i64` ở bản này và `u64` ở bản kia. Chỉ kiểm glibc thì hai job musl của CI sẽ đỏ (BUG-015).
+
+- [ ] Chạy vòng lặp trên sau **mỗi** lần sửa `crates/linux/`, không đợi tới lúc commit.
+- [ ] Clippy trên glibc có thể đòi bỏ một phép chuyển đổi mà musl **bắt buộc** phải có. Trước khi nghe theo lint, hỏi: lint này có thấy hết các target ta build không?
 - [ ] `--workspace` với target Linux thì **không** chạy được: `rusqlite` (feature `bundled`) cần trình biên dịch C chéo. Chỉ kiểm được `-p nasdedup-core` và `-p nasdedup-linux`.
 - [ ] Vì vậy phần Linux của `crates/daemon/src/platform/linux.rs` (phụ thuộc `nasdedup-db`) vẫn chỉ CI mới thấy → giữ file đó **mỏng**, đẩy hết logic xuống `nasdedup-linux`.
 - [ ] Code chạy được thì vẫn phải CI Linux xác nhận: `cargo check` không chạy test, và syscall chỉ lộ lỗi khi thật sự gọi.

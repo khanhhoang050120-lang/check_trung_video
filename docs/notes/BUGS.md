@@ -4,6 +4,76 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-015 — Cùng một dòng code: "thừa" trên glibc, "bắt buộc" trên musl
+
+**Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/linux/src/{ioctl,fsdetect}.rs`
+
+**Triệu chứng.** `cargo check --target x86_64-unknown-linux-gnu` sạch, CI Linux
+(glibc) sạch, nhưng **cả hai** job build musl đỏ với `exit code 101`.
+
+**Nguyên nhân gốc.** Hai kiểu dữ liệu của `libc` khác nhau giữa glibc và musl:
+
+| Thứ | glibc | musl |
+| :--- | :--- | :--- |
+| tham số `request` của `libc::ioctl` | `c_ulong` (u64) | `c_int` (i32) |
+| `statfs.f_type` | `i64` | `u64` |
+
+Thứ hai còn có một vòng xoắn: `i64::try_from(s.f_type)` là **bắt buộc** trên musl,
+nhưng trên glibc clippy báo `useless_conversion` — và vì CI chạy clippy với
+`-D warnings` trên glibc, không thể để nguyên. Trước đó tôi đã nghe theo clippy và
+bỏ phép chuyển đổi đi, chính là thứ làm musl gãy.
+
+**Cách sửa.**
+
+- `ioctl`: một `type MaIoctl` chọn theo `cfg(target_env = "musl")`, ép kiểu tại đúng
+  một chỗ trong hàm bọc `goi`.
+- `f_type`: một hàm `ma_fs(&statfs) -> i64` mang `#[allow(clippy::useless_conversion)]`
+  kèm giải thích. Một chỗ tắt lint, có lý do, thay vì rải `cfg` khắp nơi.
+
+**Bài học.** `cargo check --target x86_64-unknown-linux-gnu` **không đủ** cho crate
+gọi syscall: nó không thấy khác biệt ABI giữa các libc. Đã thêm
+`x86_64-unknown-linux-musl` vào máy dev và vào CHECKLIST. Và: một cảnh báo của clippy
+đúng trên nền tảng này có thể sai trên nền tảng khác — trước khi nghe theo, hãy hỏi
+"lint này có thấy hết các target mà ta build không?".
+
+---
+
+## BUG-014 — Mã `ioctl` chép tay sai, và cách để nó không thể sai nữa
+
+**Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/linux/src/ioctl.rs`
+
+**Triệu chứng.** Test `ma_ioctl_dung_cong_thuc_ior` đỏ trên CI: `XFS_IOC_FSGEOMETRY`
+không khớp công thức `_IOR`.
+
+**Nguyên nhân gốc.** Hằng số `0x8140_5865` chép tay từ trí nhớ và sai cả ba phần: số
+hiệu là **126** chứ không phải 124 (kernel ≥ 5.19 đổi struct và đổi luôn số hiệu, số
+124 nay là `XFS_IOC_FSGEOMETRY_V4`), và kích thước struct là 256 byte chứ không phải
+0x140. Ngoài ra struct `XfsFsopGeom` tôi khai cũng không khớp bản nào của kernel, chỉ
+"đủ rộng" — mà "đủ rộng" không giúp gì khi kernel từ chối vì số hiệu sai.
+
+**Vì sao nguy hiểm hơn vẻ ngoài.** Mã `ioctl` mã hóa **kích thước** struct. Nếu mã số
+và struct lệch nhau mà kernel vẫn chấp nhận, kernel sẽ ghi theo kích thước trong mã
+số — tức là ghi ra ngoài vùng nhớ ta cấp. Ở đây may mắn là `ENOTTY`, nhưng cùng loại
+lỗi trên một ioctl khác thì hỏng bộ nhớ.
+
+**Cách sửa.** Không chép hex nữa. `const fn ior(ty, nr, size)` tính theo đúng công
+thức của kernel, và `size` lấy thẳng từ `size_of::<Struct>()`:
+
+```rust
+const XFS_IOC_FSGEOMETRY: u32 = ior(b'X', 126, size_of::<XfsFsopGeom>());
+```
+
+Mã số và struct từ nay không thể lệch nhau. Hai test khóa chặt lẫn nhau: một test
+khẳng định `size_of` từng struct đúng con số trong header kernel, một test khẳng định
+mã số cuối cùng đúng giá trị đã biết. Đổi một cái mà quên cái kia thì cả hai đỏ.
+
+**Bài học.** Với hằng số bắt nguồn từ một công thức, hãy **viết công thức**, đừng viết
+kết quả. Và thêm bản V4 cho kernel cũ: `xfs_uuid` thử số hiệu mới trước, gặp `ENOTTY`
+thì lui về số hiệu cũ.
+
+---
+
+
 ## BUG-013 — Vòng lặp chỉ chạy một lần, và cặp file sẽ quay vòng vô hạn
 
 **Ngày:** 2026-09-04 · **Phase:** 2 · **Nơi:** `crates/core/src/pipeline/`

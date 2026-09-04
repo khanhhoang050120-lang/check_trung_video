@@ -2,7 +2,7 @@
 
 use crate::model::{FileLoc, FileRecord, Identity, Ts};
 use crate::repo::rules::{apply_upsert, decide_upsert, is_ready, new_row};
-use crate::repo::{RepoError, UpsertResult};
+use crate::repo::{RepoError, ScanRow, UpsertResult};
 
 use super::Store;
 
@@ -39,6 +39,25 @@ pub fn upsert_pending(
     let nid = s.alloc_id();
     s.files.insert(nid, new_row(nid, id, loc, ready_at, priority, now));
     Ok(UpsertResult { id: nid, dropped_as_self_event: false })
+}
+
+/// Chèn lô của initial scan; bỏ qua khóa đã có (spec 5.10 pha A).
+pub fn scan_insert(s: &mut Store, rows: &[ScanRow], now: Ts) -> Result<u64, RepoError> {
+    let mut n = 0;
+    for r in rows {
+        // Root chưa đăng ký là lỗi lập trình, giống `upsert_pending`.
+        s.root_kind(r.loc.root_id)?;
+        if s.files.values().any(|f| f.key == r.id.key) {
+            continue;
+        }
+        let nid = s.alloc_id();
+        let mut row = new_row(nid, &r.id, &r.loc, now, r.priority, now);
+        row.state = r.state;
+        row.ready_at = r.ready_at;
+        s.files.insert(nid, row);
+        n += 1;
+    }
+    Ok(n)
 }
 
 pub fn next_ready(s: &Store, now: Ts, allow_heavy: bool, max_wait_ms: i64) -> Option<FileRecord> {

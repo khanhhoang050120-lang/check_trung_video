@@ -22,7 +22,7 @@ pub mod conformance;
 pub use memory::MemoryRepository;
 pub use types::{
     DedupEvent, EventFilter, EventMethod, EventResult, GroupNote, GroupOp, JournalRow, Patch,
-    Transition,
+    ScanRow, Transition,
 };
 
 use crate::model::{
@@ -80,6 +80,20 @@ pub trait Repository {
 
     /// Row tiếp theo đến hạn; `allow_heavy = false` chỉ trả `settling`/`sized`
     /// trừ row đã chờ quá `max_wait_ms`.
+    /// Chèn một lô row do initial scan sinh ra; **bỏ qua** khóa đã có (spec 5.10).
+    ///
+    /// Khác `upsert_pending` ở hai điểm, cả hai đều cố ý:
+    ///
+    /// - Cho phép đặt thẳng `sized`: file đã đủ già không cần đi qua bước ổn định,
+    ///   và bước đó tốn một vòng `next_ready` cho **mỗi** file trong thư viện.
+    /// - Khóa đã tồn tại thì **không đụng gì**. Quét lại một thư viện đang chạy
+    ///   không được đặt lại tiến độ; phát hiện thay đổi là việc của delta reconcile,
+    ///   nơi có guard fingerprint.
+    ///
+    /// Cả lô nằm trong **một** transaction: 200 000 file mà mỗi file một transaction
+    /// thì initial scan mất hàng giờ chỉ vì `fsync`.
+    fn scan_insert(&self, rows: &[ScanRow], now: Ts) -> Result<u64, RepoError>;
+
     fn next_ready(
         &self,
         now: Ts,

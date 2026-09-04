@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use nasdedup_core::filter::Prefilter;
 use nasdedup_core::fs::FileSystem;
 use nasdedup_core::model::{FileLoc, Ts};
-use nasdedup_core::repo::{RepoError, Repository};
+use nasdedup_core::repo::{RepoError, Repository, ScanRow};
 use nasdedup_core::scan::{khoi_dau, nen_bo_qua, PRIORITY_SCAN};
 use nasdedup_core::throttle::IoGovernor;
 
@@ -95,6 +95,7 @@ pub fn pha_a(
 
     let mut kq = KetQuaQuet::default();
     let mut nhip = Nhip::moi(DIR_MOI_GIAY);
+    let mut lo: Vec<ScanRow> = Vec::with_capacity(b.lo);
 
     let mut it = walkdir::WalkDir::new(goc)
         .sort_by_file_name()
@@ -106,6 +107,8 @@ pub fn pha_a(
 
     while let Some(entry) = it.next() {
         if dung() {
+            // Ghi nốt phần đã gom rồi mới thoát: công đã bỏ ra thì đừng vứt đi.
+            kq.da_them += b.repo.scan_insert(&lo, now)?;
             return Ok(kq);
         }
         let entry = match entry {
@@ -164,13 +167,16 @@ pub fn pha_a(
         }
 
         let k = khoi_dau(&id, now, b.settle_delay_ms);
-        // `ready_at = None` với `sized` nghĩa là chờ pha B; `upsert_pending` luôn
-        // nhận một mốc nên truyền `now` rồi để pha B quyết định có đánh thức không.
-        let ready = k.ready_at.unwrap_or(now);
-        b.repo.upsert_pending(&id, &loc, ready, PRIORITY_SCAN, now)?;
-        kq.da_them += 1;
+        lo.push(ScanRow { id, loc, state: k.state, ready_at: k.ready_at, priority: PRIORITY_SCAN });
+        if lo.len() >= b.lo {
+            // Một transaction cho cả lô: 200 000 file mà mỗi file một transaction
+            // thì initial scan mất hàng giờ chỉ vì `fsync` (spec 5.10).
+            kq.da_them += b.repo.scan_insert(&lo, now)?;
+            lo.clear();
+        }
     }
 
+    kq.da_them += b.repo.scan_insert(&lo, now)?;
     kq.hoan_tat = true;
     Ok(kq)
 }
@@ -218,8 +224,20 @@ mod tests {
     use nasdedup_core::repo::MemoryRepository;
     use nasdedup_core::throttle::Unlimited;
 
-    const NOW: Ts = 10_000_000_000;
     const DELAY: i64 = 900_000;
+
+    /// Thời điểm "bây giờ" của test: một giờ **sau** lúc chạy.
+    ///
+    /// Phải lấy từ đồng hồ thật vì file mẫu do chính test tạo ra mang mtime thật.
+    /// Một hằng số cố định (10_000_000_000 ms là tháng 4/1970) khiến mọi file trông
+    /// như đến từ tương lai, và pha A xếp chúng vào `settling` thay vì `sized`.
+    fn now() -> Ts {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_millis()).unwrap_or(0))
+            .unwrap_or(0);
+        ms + 3_600_000
+    }
 
     struct Ban {
         _dir: tempfile::TempDir,
@@ -257,9 +275,9 @@ mod tests {
                 label: None,
                 windows_unc: None,
                 active: true,
-                added_at: NOW,
+                added_at: now(),
             },
-            NOW,
+            now(),
         )
         .expect("root");
         let loc = Prefilter::from_config(&cfg()).expect("bộ lọc");
@@ -277,7 +295,7 @@ mod tests {
             lo: 5000,
         };
         // Nhịp 200 dir/s làm test chậm; ở đây cây thư mục nhỏ nên không đáng kể.
-        pha_a(&bq, 1, cursor, NOW, &|| false).expect("quét")
+        pha_a(&bq, 1, cursor, now(), &|| false).expect("quét")
     }
 
     #[test]
@@ -290,16 +308,14 @@ mod tests {
     }
 
     #[test]
-    fn file_cu_vao_sized_khong_can_doc_noi_dung() {
-        // File vừa tạo có mtime = bây giờ thật, còn `NOW` của test là năm 2286, nên
-        // mọi file đều "cũ" so với nó.
+    fn file_du_gia_vao_thang_sized_khong_can_doc_noi_dung() {
+        // `now()` là một giờ sau lúc tạo file, quá `settle_delay` 15 phút.
         let b = ban(&[("a.mp4", 100)]);
         quet(&b, None);
-        let rows: Vec<_> = (1..=1)
-            .filter_map(|_| b.repo.find_by_path(&FileLoc::new(1, "a.mp4")).ok().flatten())
-            .collect();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].state, State::Sized, "đủ già thì bỏ qua bước ổn định");
+        let row =
+            b.repo.find_by_path(&FileLoc::new(1, "a.mp4")).expect("tra cứu").expect("phải có row");
+        assert_eq!(row.state, State::Sized, "đủ già thì bỏ qua bước ổn định");
+        assert_eq!(row.ready_at, None, "chờ pha B, chưa xếp hàng");
     }
 
     #[test]
@@ -327,6 +343,39 @@ mod tests {
     }
 
     #[test]
+    fn lo_nho_van_ghi_du_moi_file() {
+        // `lo = 1` ép mọi file đi qua đường "lô đầy"; `lo` lớn ép đi qua đường "ghi
+        // nốt phần còn lại". Cả hai phải cho cùng kết quả.
+        let b = ban(&[("a.mp4", 100), ("b.mp4", 100), ("c.mp4", 100)]);
+        let gov = Unlimited;
+        let bq = BoQuet {
+            repo: &b.repo,
+            fs: &b.fs,
+            loc: &b.loc,
+            gov: &gov,
+            settle_delay_ms: DELAY,
+            lo: 1,
+        };
+        let kq = pha_a(&bq, 1, None, now(), &|| false).expect("quét");
+        assert_eq!(kq.da_them, 3);
+    }
+
+    #[test]
+    fn quet_lai_khong_dat_lai_tien_do() {
+        // Chạy `nasdedup scan` lần hai trên thư viện đang xử lý dở không được đưa
+        // mọi thứ về vạch xuất phát.
+        let b = ban(&[("a.mp4", 100)]);
+        quet(&b, None);
+        let truoc = b.repo.find_by_path(&FileLoc::new(1, "a.mp4")).unwrap().expect("row");
+
+        let kq = quet(&b, None);
+        assert_eq!(kq.da_them, 0, "không chèn thêm row nào");
+        let sau = b.repo.find_by_path(&FileLoc::new(1, "a.mp4")).unwrap().expect("row");
+        assert_eq!(sau.id, truoc.id, "vẫn là row cũ");
+        assert_eq!(sau.state, truoc.state);
+    }
+
+    #[test]
     fn co_dung_bat_thi_thoat_va_bao_chua_hoan_tat() {
         let b = ban(&[("a.mp4", 100), ("b.mp4", 100)]);
         let gov = Unlimited;
@@ -338,7 +387,7 @@ mod tests {
             settle_delay_ms: DELAY,
             lo: 5000,
         };
-        let kq = pha_a(&bq, 1, None, NOW, &|| true).expect("quét");
+        let kq = pha_a(&bq, 1, None, now(), &|| true).expect("quét");
         assert!(!kq.hoan_tat, "bị cắt thì không được báo hoàn tất");
         assert_eq!(kq.da_them, 0);
     }
@@ -364,7 +413,7 @@ mod tests {
             settle_delay_ms: DELAY,
             lo: 5000,
         };
-        let e = pha_a(&bq, 99, None, NOW, &|| false).expect_err("root lạ");
+        let e = pha_a(&bq, 99, None, now(), &|| false).expect_err("root lạ");
         assert!(matches!(e, ScanError::RootDaDoi(99)), "{e:?}");
     }
 

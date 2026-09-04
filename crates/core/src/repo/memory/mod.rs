@@ -18,7 +18,7 @@ use crate::model::{
     RootKind, ScanProgress, State, Ts, Volume,
 };
 
-use super::types::{DedupEvent, EventFilter, GroupNote, JournalRow, Transition};
+use super::types::{DedupEvent, EventFilter, GroupNote, JournalRow, ScanRow, Transition};
 use super::{RepoError, Repository, Scope, UpsertResult};
 
 /// Toàn bộ dữ liệu, khóa bằng một `Mutex` như DB actor một luồng.
@@ -98,6 +98,10 @@ impl Repository for MemoryRepository {
         now: Ts,
     ) -> Result<UpsertResult, RepoError> {
         queue::upsert_pending(&mut *self.lock()?, id, loc, ready_at, priority, now)
+    }
+
+    fn scan_insert(&self, rows: &[ScanRow], now: Ts) -> Result<u64, RepoError> {
+        queue::scan_insert(&mut *self.lock()?, rows, now)
     }
 
     fn next_ready(

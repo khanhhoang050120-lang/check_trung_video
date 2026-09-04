@@ -124,6 +124,8 @@ macro_rules! repository_conformance_tests {
             upsert_user_undo_van_cap_nhat_ready_at,
             upsert_missing_prev_khong_khoi_phuc_duoc,
             upsert_root_chua_dang_ky_bi_tu_choi,
+            scan_insert_dat_thang_state_va_bo_qua_row_da_co,
+            scan_insert_root_chua_dang_ky_bi_tu_choi,
             next_ready_uu_tien_realtime,
             next_ready_khong_tra_row_chua_den_han,
             next_ready_ngoai_khung_gio_chi_settling_sized,

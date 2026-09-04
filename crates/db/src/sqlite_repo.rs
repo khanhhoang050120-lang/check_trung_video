@@ -10,8 +10,8 @@ use nasdedup_core::model::{
     ScanProgress, Ts, Volume,
 };
 use nasdedup_core::repo::{
-    DedupEvent, EventFilter, GroupNote, JournalRow, RepoError, Repository, Scope, Transition,
-    UpsertResult,
+    DedupEvent, EventFilter, GroupNote, JournalRow, RepoError, Repository, ScanRow, Scope,
+    Transition, UpsertResult,
 };
 use rusqlite::Connection;
 
@@ -73,6 +73,10 @@ impl Repository for SqliteRepo {
         now: Ts,
     ) -> Result<UpsertResult, RepoError> {
         Ok(queue::upsert_pending(&self.conn, id, loc, ready_at, priority, now)?)
+    }
+
+    fn scan_insert(&self, rows: &[ScanRow], now: Ts) -> Result<u64, RepoError> {
+        Ok(queue::scan_insert(&self.conn, rows, now)?)
     }
 
     fn next_ready(

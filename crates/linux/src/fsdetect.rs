@@ -109,6 +109,11 @@ fn tu_fsid(s: &libc::statfs) -> [u8; 16] {
 /// superblock; `FS_IOC_GETFSUUID` sau (kernel ≥ 6.5); cuối cùng mới tới `f_fsid`,
 /// thứ kém bền nhất.
 ///
+/// **`fd` phải mở bằng `O_RDONLY`, không phải `O_PATH`.** `fstatfs` chạy được trên
+/// `O_PATH` nhưng mọi `ioctl` thì không (`EBADF`), nên cùng một thư mục sẽ cho hai
+/// `domain_id` khác nhau tùy cách mở — và mã so sánh miền sẽ tưởng đó là hai
+/// filesystem khác nhau. Dùng [`nhan_dang_path`] nếu chỉ có đường dẫn.
+///
 /// # Errors
 /// `fstatfs` thất bại.
 pub fn nhan_dang(fd: BorrowedFd<'_>) -> io::Result<FsInfo> {

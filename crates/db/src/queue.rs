@@ -9,7 +9,7 @@
 //! chung là thứ giữ hai bên không lệch nhau.
 
 use nasdedup_core::model::{FileLoc, FileRecord, Identity, RootKind, Ts};
-use nasdedup_core::repo::UpsertResult;
+use nasdedup_core::repo::{ScanRow, UpsertResult};
 use rusqlite::{named_params, Connection, OptionalExtension};
 
 use crate::error::DbError;
@@ -203,6 +203,59 @@ pub fn upsert_in_tx(
     // `dropped` = row đang ở trạng thái nghỉ nên sự kiện này không đánh thức nó.
     let dropped = !matches!(state.as_str(), "settling" | "sized" | "hashed");
     Ok(UpsertResult { id: row_id, dropped_as_self_event: dropped })
+}
+
+/// Chèn một lô row của initial scan trong **một** transaction (spec 5.10 pha A).
+///
+/// `INSERT ... ON CONFLICT DO NOTHING`: khóa đã có thì không đụng gì, kể cả khi
+/// fingerprint đã khác. Phát hiện thay đổi là việc của delta reconcile.
+///
+/// # Errors
+/// Lỗi SQLite, hoặc root chưa đăng ký.
+pub fn scan_insert(conn: &Connection, rows: &[ScanRow], now: Ts) -> Result<u64, DbError> {
+    let tx = conn.unchecked_transaction()?;
+    let mut n = 0_u64;
+    {
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO files (
+                 sub_id, ino, domain_id, root_id, rel_path, owner_uid, mode,
+                 size, mtime_ns, ctime_ns, nlink,
+                 state, ready_at, priority,
+                 enq_size, enq_mtime_ns, enq_ctime_ns,
+                 first_seen_at, last_seen_at, updated_at
+             ) VALUES (
+                 :sub_id, :ino, :domain_id, :root_id, :rel_path, :uid, :mode,
+                 :size, :mtime_ns, :ctime_ns, :nlink,
+                 :state, :ready_at, :priority,
+                 :size, :mtime_ns, :ctime_ns,
+                 :now, :now, :now
+             )
+             ON CONFLICT (sub_id, ino) DO NOTHING",
+        )?;
+        for r in rows {
+            // Kiểm root ở đây chứ không ở vòng ngoài: một lô có thể trộn nhiều root.
+            root_kind(&tx, r.loc.root_id)?;
+            n += stmt.execute(named_params! {
+                ":sub_id": r.id.key.sub_id.as_bytes().as_slice(),
+                ":ino": row::u64_to_i64(r.id.key.ino),
+                ":domain_id": r.id.domain_id.as_bytes().as_slice(),
+                ":root_id": r.loc.root_id,
+                ":rel_path": row::path_to_text(&r.loc.rel_path),
+                ":uid": r.id.uid,
+                ":mode": r.id.mode,
+                ":size": row::u64_to_i64(r.id.size),
+                ":mtime_ns": r.id.mtime_ns,
+                ":ctime_ns": r.id.ctime_ns,
+                ":nlink": r.id.nlink,
+                ":state": r.state.as_str(),
+                ":ready_at": r.ready_at,
+                ":priority": r.priority,
+                ":now": now,
+            })? as u64;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
 }
 
 /// Lấy row tiếp theo đến hạn (spec 4.3).
