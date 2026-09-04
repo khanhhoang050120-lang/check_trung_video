@@ -26,6 +26,17 @@ use nasdedup_linux::daemon::{bay_gio, dang_ky_roots, CoDung};
 use nasdedup_linux::scan::{pha_a, BoQuet};
 use nasdedup_linux::LinuxFs;
 
+/// "Bây giờ" của test: một phút **sau** lúc file được tạo.
+///
+/// Không dùng thẳng `bay_gio()`: `Ts` là mili-giây còn `mtime_ns` là nano-giây, nên
+/// một file vừa tạo có thể có `mtime_ns` **lớn hơn** `now_ms × 1_000_000` do phần lẻ
+/// dưới mili-giây bị cắt. Lúc đó `candidates` coi nó là "chưa ổn định" và bỏ qua.
+/// Trong thực tế `settle_delay` là 15 phút nên chênh lệch 1 ms không bao giờ đáng
+/// kể; chỉ test với `settle_delay = 0` mới chạm vào biên này.
+fn luc_nay() -> nasdedup_core::model::Ts {
+    bay_gio() + 60_000
+}
+
 /// Nội dung mp4 hợp lệ dài `n` byte; `seed` khác nhau cho nội dung khác nhau.
 fn mp4(n: usize, seed: u8) -> Vec<u8> {
     let mut v = vec![0, 0, 0, 0x20];
@@ -81,8 +92,8 @@ impl Ban {
             settle_delay_ms: 0,
             lo: 5_000,
         };
-        let kq = pha_a(&bq, 1, None, bay_gio(), &|| false).expect("quét");
-        self.repo.scan_phase_b(1, bay_gio()).expect("pha B");
+        let kq = pha_a(&bq, 1, None, luc_nay(), &|| false).expect("quét");
+        self.repo.scan_phase_b(1, luc_nay()).expect("pha B");
         kq
     }
 
@@ -98,7 +109,7 @@ impl Ban {
             policy: &self.cfg.policy,
             hash: &self.cfg.hash,
             timing: &self.cfg.timing,
-            now: bay_gio(),
+            now: luc_nay(),
             allow_heavy: true,
             next_heavy_at: None,
         };
@@ -216,8 +227,8 @@ fn file_bi_ghi_de_giua_chung_thi_quay_lai_tu_dau() {
             truoc.id,
             truoc.state,
             State::Sized,
-            nasdedup_core::repo::Patch::new().ready_at(Some(bay_gio())),
-            bay_gio(),
+            nasdedup_core::repo::Patch::new().ready_at(Some(luc_nay())),
+            luc_nay(),
         ))
         .expect("đưa lại vào hàng đợi");
     b.xu_ly();
@@ -245,7 +256,7 @@ fn khoi_phuc_dung_con_tro_sau_khi_bi_cat_giua_chung() {
     let gov = Unlimited;
     let bq =
         BoQuet { repo: &b.repo, fs: &b.fs, loc: &b.loc, gov: &gov, settle_delay_ms: 0, lo: 5_000 };
-    pha_a(&bq, 1, Some(Path::new("a/z")), bay_gio(), &|| false).expect("quét");
+    pha_a(&bq, 1, Some(Path::new("a/z")), luc_nay(), &|| false).expect("quét");
 
     assert!(b.repo.find_by_path(&FileLoc::new(1, "0cu/x.mp4")).unwrap().is_none(), "đã quét xong");
     assert!(
