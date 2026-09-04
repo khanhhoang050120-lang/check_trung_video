@@ -3,6 +3,52 @@
 Chỗ bản đặc tả mơ hồ, sai, hoặc lệch với code. Sửa được thì sửa thẳng vào spec rồi ghi lại ở đây.
 
 ---
+## SPEC-009 — Watcher lúc dừng: xả `Gom` nhưng **không** xả bảng chờ ghép cặp
+
+**Trạng thái:** lệch có chủ ý so với 5.12/5.10, đã hiện thực hóa (Phase 4 Gói C)
+
+Spec 5.12 bắt event thread flush coalesce map trước khi thoát, và `watch::vong::chay`
+làm đúng thế với `Gom::xa_het()`. Nhưng bảng chờ của `GhepRename` **không** được
+`xa_het()`: nó chỉ được `het_han(now)`, tức chỉ những nửa `IN_MOVED_FROM` đã hết trọn
+cửa sổ 2 giây mới thành `RemovedUnknown`; phần còn lại bị **bỏ** kèm một dòng WARN.
+
+Vì sao: `xa_het()` chuyển vô điều kiện mọi mục đang chờ thành `RemovedUnknown`, mà bộ
+xử lý dịch nó thành `mark_missing` + `mark_missing_prefix`. Một nửa `From` chưa hết
+cửa sổ thì nửa `To` của nó hoàn toàn có thể đang trên đường tới — đúng cuộc đua mà
+`vong::tests::dung_giua_from_va_to_van_ghep_duoc_thay_vi_danh_missing` dựng lại. Khi
+đó `mv 2024 2024-final` (thư mục 5 000 file) trùng đúng lúc `systemctl restart` sẽ
+đánh `missing` cả 5 000 row trong khi mọi file còn nguyên trên đĩa, rồi `retention`
+đẩy chúng sang `gone`. Đó là đánh `missing` **không có bằng chứng dương nào**, thứ
+câu cuối spec 5.10 cấm ("`missing` ngoài presence chỉ khi có bằng chứng dương").
+
+Cái mất: một lần xóa thật rơi vào cửa sổ 2 giây cuối cùng trước khi tắt sẽ không được
+báo, và phải chờ tới lượt presence scan (tối đa 7 ngày). Chậm, nhưng đảo ngược được —
+còn hướng kia thì không. Đổi lại, nửa `From` bị bỏ được ghi WARN kèm số lượng chứ
+không im lặng.
+
+**Cần làm:** thêm một câu vào mục 5.12 nói rõ chỉ coalesce map được xả vô điều kiện,
+còn bảng ghép cặp rename phải tuân luật bằng chứng dương của 5.10.
+
+---
+## SPEC-010 — Watcher không đi theo symlink, giống walk chung
+
+**Trạng thái:** đã hiện thực hóa (Phase 4 Gói C), spec không nói
+
+Spec 5.10 chốt `follow_links(false)` cho walk chung nhưng 5.9 không nói gì về watcher.
+Mặc định của `notify` là `follow_symlinks: true` (`config.rs:117-124`), và nó đi thẳng
+vào `WalkDir::follow_links` khi đăng ký watch (`inotify.rs:400-412`) — tức watcher sẽ
+watch mọi thư mục ở phía bên kia mỗi symlink trong cây.
+
+`dang_ky` đặt `with_follow_symlinks(false)`. Hai cây phải giống nhau: nếu watcher thấy
+`root/external/phim.mp4` (qua symlink) mà presence scan không thấy, watcher upsert row
+còn presence đánh `missing` rồi `gone` — row nhấp nháy vĩnh viễn, không lỗi, không log.
+Kèm theo, `dang_ky` `canonicalize` đường dẫn root: với `follow_symlinks(false)`, một
+root **tự nó** là symlink sẽ bị `filter_dir` của `notify` (`inotify.rs:522-531`, dùng
+`lstat`) loại bỏ, `add_watch` vẫn trả `Ok(())`, và root mất watch mà không có lỗi nào.
+
+**Cần làm:** thêm `follow_links(false)` và "root phải canonical" vào mục 5.9.
+
+---
 ## SPEC-008 — Hợp đồng presence scan đổi: phiên gắn với root, và tách `gone` ra riêng
 
 **Trạng thái:** đã hiện thực hóa (Phase 4 Gói 0), **spec cần cập nhật mục 3.3 và 5.10**

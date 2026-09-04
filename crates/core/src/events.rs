@@ -16,8 +16,18 @@ pub enum FsEvent {
     Renamed { from: FileLoc, to: FileLoc },
     /// `IN_MOVED_TO` đơn lẻ: file chuyển vào từ ngoài cây watch.
     MovedIn(FileLoc),
-    /// `IN_MOVED_FROM` đơn lẻ (sau timeout ghép cặp) hoặc `IN_DELETE`.
+    /// `IN_DELETE`: file bị xóa, và ta **biết** đó là file.
     Removed(FileLoc),
+    /// `IN_MOVED_FROM` hết hạn ghép cặp: **không biết** file hay thư mục.
+    ///
+    /// Đích đã đi khỏi cây watch nên `statx` không trả lời được, và inotify **không**
+    /// gắn cờ `ISDIR` vào sự kiện rename như nó gắn cho `Create`/`Delete`. Bộ xử lý
+    /// phải suy từ DB: có row đúng path thì là file, có row nào nằm dưới prefix thì
+    /// là thư mục.
+    ///
+    /// Tách khỏi [`Self::Removed`] để nhánh đắt hơn — thêm một `mark_missing_prefix`
+    /// quét dải — không bị trả giá cho mọi lần xóa file thường.
+    RemovedUnknown(FileLoc),
     /// Thư mục bị xóa hoặc chuyển đi.
     RemovedDir(FileLoc),
     /// Thư mục đổi tên: cập nhật prefix cho mọi row bên dưới.
@@ -59,20 +69,12 @@ impl FsEvent {
             | Self::Modified(l)
             | Self::MovedIn(l)
             | Self::Removed(l)
+            | Self::RemovedUnknown(l)
             | Self::RemovedDir(l)
             | Self::CreatedDir(l) => Some(l),
             Self::Renamed { to, .. } | Self::RenamedDir { to, .. } => Some(to),
             Self::NeedsRescan { .. } => None,
         }
-    }
-
-    /// Sự kiện này có sinh `upsert_pending` ngay không (spec 5.9).
-    ///
-    /// `Modified` chỉ cập nhật map coalesce vì một upload 50 GB sinh hàng chục nghìn
-    /// `IN_MODIFY`.
-    #[must_use]
-    pub const fn triggers_upsert(&self) -> bool {
-        matches!(self, Self::Closed(_) | Self::MovedIn(_) | Self::Renamed { .. })
     }
 }
 
@@ -154,14 +156,24 @@ mod tests {
     }
 
     #[test]
-    fn chi_mot_so_su_kien_sinh_upsert() {
-        assert!(FsEvent::Closed(loc("a.mp4")).triggers_upsert());
-        assert!(FsEvent::MovedIn(loc("a.mp4")).triggers_upsert());
-        assert!(FsEvent::Renamed { from: loc("t.tmp"), to: loc("a.mp4") }.triggers_upsert());
-        // Modify chỉ vào map coalesce (spec 5.9).
-        assert!(!FsEvent::Modified(loc("a.mp4")).triggers_upsert());
-        assert!(!FsEvent::Removed(loc("a.mp4")).triggers_upsert());
-        assert!(!FsEvent::NeedsRescan { reason: RescanReason::QueueOverflow }.triggers_upsert());
+    fn moi_su_kien_co_path_deu_tra_ra_loc() {
+        // `loc()` là cách duy nhất tầng trên lấy đường dẫn ra khỏi sự kiện. Thêm một
+        // biến thể mà quên nó thì sự kiện ấy bị bỏ qua lặng lẽ, không lỗi nào.
+        let l = loc("a.mp4");
+        for e in [
+            FsEvent::Closed(l.clone()),
+            FsEvent::Modified(l.clone()),
+            FsEvent::MovedIn(l.clone()),
+            FsEvent::Removed(l.clone()),
+            FsEvent::RemovedUnknown(l.clone()),
+            FsEvent::RemovedDir(l.clone()),
+            FsEvent::CreatedDir(l.clone()),
+            FsEvent::Renamed { from: loc("t.tmp"), to: l.clone() },
+            FsEvent::RenamedDir { from: loc("cu"), to: l.clone() },
+        ] {
+            assert_eq!(e.loc(), Some(&l), "{e:?}");
+        }
+        assert_eq!(FsEvent::NeedsRescan { reason: RescanReason::QueueOverflow }.loc(), None);
     }
 
     #[test]

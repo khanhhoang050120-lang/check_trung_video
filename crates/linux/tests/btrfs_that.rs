@@ -33,6 +33,7 @@ use nasdedup_core::repo::{MemoryRepository, Repository};
 use nasdedup_core::throttle::Unlimited;
 use nasdedup_linux::daemon::{bay_gio, dang_ky_roots};
 use nasdedup_linux::scan::{pha_a, BoQuet};
+use nasdedup_linux::walk::mountinfo::MoiGan;
 use nasdedup_linux::{fsdetect, LinuxFs};
 
 /// Một Btrfs dựng trên file loop; tự unmount khi bị thả.
@@ -213,4 +214,101 @@ fn domain_id_cua_btrfs_lay_tu_ioctl_chu_khong_phai_f_fsid() {
 
     assert_eq!(cha.domain_id, con.domain_id, "cùng superblock thì cùng domain_id");
     assert_ne!(cha.sub_id, con.sub_id, "khác subvolume thì khác sub_id");
+}
+
+/// Dựng một Btrfs 512 MiB và gắn nó vào **đúng** `diem_gan` cho trước.
+///
+/// Khác `dung_btrfs` ở chỗ điểm gắn nằm bên trong một filesystem khác — đó là cách
+/// duy nhất dựng được "mount point con" thật để kiểm ranh giới.
+///
+/// **Không** trả `Option`: phép kiểm biến môi trường đã nằm ở `dung_btrfs` mà người
+/// gọi chạy trước, nên tới được đây nghĩa là biến chắc chắn có. Trả `None` khi
+/// `mount` hay `mkfs.btrfs` hỏng sẽ làm test kết thúc mà **chưa khẳng định một điều
+/// gì** về ranh giới mount, trong khi lá chắn của CI (`test result: ok. N passed`)
+/// vẫn được thỏa nhờ các test Btrfs khác — đúng khuôn mà CHECKLIST cấm.
+fn dung_btrfs_tai(ten: &str, diem_gan: &Path) -> BtrfsTam {
+    let anh = PathBuf::from(format!("/tmp/nasdedup-it-{ten}.img"));
+    let _ = std::fs::remove_file(&anh);
+    std::fs::create_dir_all(diem_gan).expect("tạo điểm gắn con");
+
+    let f = std::fs::File::create(&anh).expect("tạo file ảnh");
+    f.set_len(512 * 1024 * 1024).expect("đặt kích thước ảnh");
+    drop(f);
+    let ok = Command::new("mkfs.btrfs")
+        .arg("-q")
+        .arg("-f")
+        .arg(&anh)
+        .status()
+        .expect("chạy mkfs.btrfs")
+        .success();
+    assert!(ok, "mkfs.btrfs thất bại");
+    let ok = Command::new("mount")
+        .args(["-o", "loop"])
+        .arg(&anh)
+        .arg(diem_gan)
+        .status()
+        .expect("chạy mount")
+        .success();
+    assert!(ok, "mount thất bại — test này cần chạy bằng root và còn loop device");
+    BtrfsTam { diem_gan: diem_gan.to_path_buf(), anh }
+}
+
+#[test]
+#[ignore = "cần NASDEDUP_IT_MOUNT, quyền root và btrfs-progs"]
+fn mountinfo_khong_prune_subvolume_nhung_van_prune_filesystem_khac() {
+    // Chỗ dễ làm hỏng nhất khi đổi cách kiểm ranh giới sang ảnh chụp
+    // `/proc/self/mountinfo`. Hai mệnh đề phải cùng đúng:
+    //
+    // - Subvolume Btrfs **không** phải điểm gắn, nên nó không có trong mountinfo và
+    //   walk đi thẳng vào — đúng thứ ta cần quét (spec 5.10, BUG-018).
+    // - Một filesystem khác gắn bên trong root **là** điểm gắn, nên nó được hỏi
+    //   `domain_id`, và vì khác superblock nên bị prune: không share extent sang
+    //   được, quét vào chỉ tạo row không bao giờ dedup nổi.
+    //
+    // Nếu ai đó thay bước hỏi `domain_id` bằng phép so `major:minor` của mountinfo,
+    // mệnh đề thứ nhất gãy ngay — Btrfs cấp `major:minor` ảo riêng cho mỗi subvolume.
+    let Some(fs_tam) = dung_btrfs("mountinfo-ranh-gioi") else { return };
+    let goc = fs_tam.diem_gan.clone();
+
+    std::fs::write(goc.join("goc.mp4"), mp4(4096, 1)).expect("ghi gốc");
+    tao_subvolume(&goc, "con");
+    std::fs::write(goc.join("con/trong-subvol.mp4"), mp4(4096, 2)).expect("ghi subvol");
+
+    // Filesystem thứ hai, gắn vào `<goc>/khach`.
+    let khach = goc.join("khach");
+    let _fs_khach = dung_btrfs_tai("mountinfo-khach", &khach);
+    std::fs::write(khach.join("ben-ngoai.mp4"), mp4(4096, 3)).expect("ghi khách");
+
+    // Tiền đề của cả bước tối ưu: ảnh chụp phân biệt được hai chỗ này.
+    let moi_gan = MoiGan::chup();
+    assert!(moi_gan.doc_duoc(), "tiền đề: đọc được /proc/self/mountinfo");
+    assert!(
+        !moi_gan.can_kiem(&goc.join("con")),
+        "subvolume không phải điểm gắn: walk phải đi thẳng vào, không tốn syscall"
+    );
+    assert!(moi_gan.can_kiem(&khach), "filesystem khác gắn vào trong root PHẢI là điểm gắn");
+
+    let cfg = Config::from_toml(&format!(
+        "[watch]\nroots = [\"{}\"]\nmin_size = \"0B\"\n\n[timing]\nsettle_delay = \"0s\"\n",
+        goc.display()
+    ))
+    .expect("cấu hình");
+    let fs = LinuxFs::new([(1_i64, goc.clone(), RootKind::Local)]).expect("LinuxFs");
+    let repo = MemoryRepository::new();
+    dang_ky_roots(&repo, &fs, &cfg).expect("đăng ký root");
+    let loc = Prefilter::from_config(&cfg).expect("bộ lọc");
+    let gov = Unlimited;
+    let bq = BoQuet { repo: &repo, fs: &fs, loc: &loc, gov: &gov, settle_delay_ms: 0, lo: 5_000 };
+
+    let kq = pha_a(&bq, 1, None, bay_gio() + 60_000, &|| false).expect("quét");
+
+    assert!(
+        repo.find_by_path(&FileLoc::new(1, "con/trong-subvol.mp4")).unwrap().is_some(),
+        "subvolume con bị bỏ sót — đây là hồi quy của BUG-018"
+    );
+    assert!(
+        repo.find_by_path(&FileLoc::new(1, "khach/ben-ngoai.mp4")).unwrap().is_none(),
+        "filesystem khác phải bị prune ở ranh giới mount"
+    );
+    assert_eq!(kq.da_them, 2, "đúng hai file: gốc và trong subvolume");
 }

@@ -4,6 +4,31 @@ Những chỗ cố ý để lại chưa hoàn chỉnh. Khi xử lý xong thì ch
 
 ---
 
+## ISSUE-010 — `Repository` thiếu hai truy vấn dải, nên hai guard của watcher phải đi đường vòng
+
+**Từ:** Phase 4 Gói A · **Nơi:** `crates/core/src/repo/mod.rs`
+
+Vòng soi Gói A chỉ ra hai chỗ cần sửa mà **không cài được trong phạm vi gói đó**, vì
+cả hai đều đòi thêm hàm vào trait — tức ba bản cài đặt cộng bộ test tương thích.
+
+1. **Không có truy vấn đếm-dưới-prefix chỉ-đọc.** `mark_missing_prefix` trả con số
+   **sau khi đã ghi** và không có đường hoàn tác, nên không thể "xem trước sẽ đánh bao
+   nhiêu row rồi mới quyết định". Muốn một ngưỡng kiểu "một sự kiện không được đánh
+   `missing` quá N row mà không có xác nhận" thì phải có hàm đếm riêng.
+2. **Không có cách liệt kê row `missing` dưới một prefix**, nên không
+   `restore_or_reset` từng cái được khi một thư mục bị đánh dấu oan rồi quay lại.
+
+**Đã giảm nhẹ ở Gói A, không phải bỏ qua:** dải chỉ bị quét khi có **bằng chứng dương**
+(`statx` trả `ENOENT`), gốc root bị chặn hẳn (`rel_path` rỗng → `Constraint`), và số row
+bị đánh được trả ra ngoài qua `HanhDong::DaDanhDauMissing` để tầng trên ALERT được.
+Nguyên nhân sinh ra "missing oan dưới prefix" đã bị chặn; hai hàm trên là lớp phòng thứ hai.
+
+**Đề nghị khi làm:** `mark_missing_except(dir, giu_lai: &[FileKey], now)` và một hàm đếm
+dải chỉ-đọc. Nhớ chạy lại probe ma trận và fuzz vi phân (CHECKLIST: "chạy lại mỗi khi
+thêm một hàm vào `Repository`").
+
+---
+
 ## ISSUE-009 — Phần chưa làm của Phase 3
 
 **Từ:** Phase 3 · **Nơi:** `crates/linux/`, `crates/daemon/`

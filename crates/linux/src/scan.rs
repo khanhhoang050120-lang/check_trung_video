@@ -4,37 +4,46 @@
 //! A chạy được **ngoài** khung giờ nặng và một thư viện 200 000 file quét xong
 //! trong vài phút thay vì vài ngày.
 //!
+//! File này chỉ còn phần **dây nối**: vòng đi bộ nằm ở [`crate::walk::di_bo`], việc
+//! làm gì với một entry nằm ở [`nasdedup_core::walk::ThemVaoHangDoi`]. Tách ra vì
+//! ba phép quét kia (delta reconcile, presence, remote) dùng lại đúng vòng đi bộ
+//! ấy, và vì phần quyết định khi ở `nasdedup-core` thì test được trên Windows.
+//!
 //! Ba thứ dễ làm sai, và chỗ xử lý từng thứ:
 //!
 //! 1. **Ranh giới mount.** `walkdir` dùng `st_dev` để nhận biết, mà Btrfs cấp
 //!    `st_dev` riêng cho mỗi subvolume — nên `same_file_system(true)` sẽ dừng ở
-//!    subvolume con, tức là bỏ sót đúng thứ ta cần quét. Ở đây tự kiểm bằng
-//!    `domain_id`: cùng superblock thì đi tiếp, khác thì dừng.
-//! 2. **Con trỏ tiếp tục.** So theo thành phần đường dẫn, không theo chuỗi — logic
-//!    thuần nằm ở [`nasdedup_core::scan`] cùng với lý do.
+//!    subvolume con, tức là bỏ sót đúng thứ ta cần quét. Xử lý ở
+//!    [`crate::walk::mountinfo`].
+//! 2. **Con trỏ tiếp tục.** So theo thành phần đường dẫn, không theo chuỗi; và chỉ
+//!    được đẩy **sau** khi lô đã commit — logic thuần ở [`nasdedup_core::scan`].
 //! 3. **Nhịp độ.** Metadata cũng là I/O; `readdir` trên một thư mục 50 000 file làm
-//!    NAS giật nếu chạy hết tốc lực.
+//!    NAS giật nếu chạy hết tốc lực. Nhịp và phanh `should_pause` ở
+//!    [`crate::walk`].
 
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
 
 use nasdedup_core::filter::Prefilter;
-use nasdedup_core::fs::FileSystem;
-use nasdedup_core::model::{FileLoc, Ts};
-use nasdedup_core::repo::{RepoError, Repository, ScanRow};
-use nasdedup_core::scan::{khoi_dau, nen_bo_qua, PRIORITY_SCAN};
+use nasdedup_core::model::Ts;
+use nasdedup_core::repo::{RepoError, Repository};
 use nasdedup_core::throttle::IoGovernor;
+use nasdedup_core::walk::{BoXuLy, ThemVaoHangDoi};
 
+use crate::walk::{di_bo, BoDiBo, DIR_MOI_GIAY};
 use crate::LinuxFs;
 
-/// Số byte ước tính cho mỗi entry, dùng để xin phép governor (spec 5.10).
-const BYTE_MOI_ENTRY: u64 = 4096;
-
-/// Số thư mục xử lý mỗi giây khi không bị chặn (spec 5.10).
-const DIR_MOI_GIAY: u32 = 200;
+// `Nhip` và `khac_domain` đã chuyển sang `crate::walk`; giữ nguyên tên ở đây để bộ
+// test cũ của module gọi được y như trước. "Refactor không đổi hành vi" chỉ chứng
+// minh được bằng chính những test cũ ấy, không sửa một dòng nào.
+#[cfg(test)]
+use crate::walk::{mountinfo::khac_domain, Nhip};
+#[cfg(test)]
+use nasdedup_core::model::FileLoc;
+#[cfg(test)]
+use std::time::{Duration, Instant};
 
 /// Kết quả một lần quét một root.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KetQuaQuet {
     /// Số file đã đưa vào hàng đợi.
     pub da_them: u64,
@@ -44,6 +53,12 @@ pub struct KetQuaQuet {
     pub so_thu_muc: u64,
     /// Walk chạy hết root hay bị cắt giữa chừng.
     pub hoan_tat: bool,
+    /// Thư mục cuối đã **commit xong**, để ghi vào `scan_progress` (BUG-019).
+    ///
+    /// Không có trường này thì dù muốn ghi con trỏ cũng không có gì để ghi — đó
+    /// chính là cách Phase 3 tích xanh oan tiêu chí "khởi động lại giữa scan".
+    /// `None` nghĩa là chưa thư mục nào an toàn, **không** phải "ghi giá trị rỗng".
+    pub thu_muc_cuoi: Option<PathBuf>,
 }
 
 /// Lỗi khi quét.
@@ -82,138 +97,19 @@ pub fn pha_a(
     now: Ts,
     dung: &dyn Fn() -> bool,
 ) -> Result<KetQuaQuet, ScanError> {
-    // Root bị unmount thì thư mục điểm gắn thường rỗng. Quét tiếp lúc đó sẽ không
-    // thêm gì (vô hại) nhưng presence scan sau đó sẽ đánh dấu cả thư viện là
-    // `missing`. Dừng sớm và nói rõ lý do.
-    if !b.fs.root_con_nguyen(root_id).unwrap_or(false) {
-        return Err(ScanError::RootDaDoi(root_id));
-    }
-    let Some(goc) = b.fs.root_path(root_id) else {
-        return Err(ScanError::RootDaDoi(root_id));
-    };
-    let domain = b.fs.info(root_id).map(|i| i.domain_id);
+    let bo = BoXuLy { repo: b.repo, fs: b.fs, loc: b.loc, root_id, now };
+    let mut xl = ThemVaoHangDoi::moi(bo, b.settle_delay_ms, b.lo);
+    let di = BoDiBo { fs: b.fs, gov: b.gov, dir_moi_giay: DIR_MOI_GIAY, cursor };
 
-    let mut kq = KetQuaQuet::default();
-    let mut nhip = Nhip::moi(DIR_MOI_GIAY);
-    let mut lo: Vec<ScanRow> = Vec::with_capacity(b.lo);
-
-    let mut it = walkdir::WalkDir::new(goc)
-        .sort_by_file_name()
-        .follow_links(false)
-        // `same_file_system` dùng `st_dev`, sẽ dừng ở mỗi subvolume Btrfs; ta tự kiểm
-        // bằng `domain_id` ở dưới.
-        .same_file_system(false)
-        .into_iter();
-
-    while let Some(entry) = it.next() {
-        if dung() {
-            // Ghi nốt phần đã gom rồi mới thoát: công đã bỏ ra thì đừng vứt đi.
-            kq.da_them += b.repo.scan_insert(&lo, now)?;
-            return Ok(kq);
-        }
-        let entry = match entry {
-            Ok(e) => e,
-            // Một thư mục không đọc được không được làm hỏng cả lượt quét.
-            Err(e) => {
-                tracing::warn!(loi = %e, "bỏ qua một mục khi quét");
-                continue;
-            }
-        };
-        let Ok(rel) = entry.path().strip_prefix(goc) else { continue };
-        let rel = rel.to_path_buf();
-
-        if entry.file_type().is_dir() {
-            kq.so_thu_muc += 1;
-            nhip.cho();
-
-            if !rel.as_os_str().is_empty() {
-                // Đã quét xong ở lần chạy trước: bỏ nguyên cây con.
-                if cursor.is_some_and(|c| nen_bo_qua(&rel, c)) {
-                    it.skip_current_dir();
-                    continue;
-                }
-                // Ranh giới mount: khác superblock nghĩa là đã sang filesystem khác,
-                // nơi ta không dedup sang được (spec 5.10).
-                if khac_domain(entry.path(), domain) {
-                    tracing::info!(duong_dan = %entry.path().display(), "dừng ở ranh giới mount");
-                    it.skip_current_dir();
-                }
-            }
-            continue;
-        }
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        b.gov.acquire(BYTE_MOI_ENTRY);
-        let loc = FileLoc::new(root_id, rel);
-
-        // Pre-filter trước `statx`: bốn quy tắc đầu chỉ cần đường dẫn, và chúng loại
-        // được đại đa số entry mà không tốn syscall nào.
-        let so_bo = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        if b.loc.check_path(&loc.rel_path, so_bo).is_some() {
-            kq.da_loai += 1;
-            continue;
-        }
-
-        let id = match b.fs.statx(&loc) {
-            Ok(id) => id,
-            // File biến mất giữa lúc quét là chuyện bình thường trên NAS đang dùng.
-            Err(_) => continue,
-        };
-        if b.loc.check(b.fs, &loc, id.size).is_some() {
-            kq.da_loai += 1;
-            continue;
-        }
-
-        let k = khoi_dau(&id, now, b.settle_delay_ms);
-        lo.push(ScanRow { id, loc, state: k.state, ready_at: k.ready_at, priority: PRIORITY_SCAN });
-        if lo.len() >= b.lo {
-            // Một transaction cho cả lô: 200 000 file mà mỗi file một transaction
-            // thì initial scan mất hàng giờ chỉ vì `fsync` (spec 5.10).
-            kq.da_them += b.repo.scan_insert(&lo, now)?;
-            lo.clear();
-        }
-    }
-
-    kq.da_them += b.repo.scan_insert(&lo, now)?;
-    kq.hoan_tat = true;
-    Ok(kq)
-}
-
-/// Thư mục này có nằm trên filesystem khác với root không (spec 5.10).
-///
-/// Không dùng `walkdir::same_file_system`: nó so `st_dev`, mà Btrfs cấp `st_dev`
-/// riêng cho **mỗi subvolume**, nên nó sẽ dừng ở subvolume con — đúng thứ ta cần
-/// quét. So `domain_id` mới đúng nghĩa "cùng superblock".
-fn khac_domain(p: &Path, domain: Option<nasdedup_core::model::DomainId>) -> bool {
-    let (Some(d), Ok(info)) = (domain, crate::fsdetect::nhan_dang_path(p)) else {
-        return false;
-    };
-    info.domain_id != d
-}
-
-/// Giữ nhịp `n` thư mục mỗi giây bằng cách ngủ bù phần chạy nhanh hơn.
-struct Nhip {
-    khoang: Duration,
-    lan_truoc: Option<Instant>,
-}
-
-impl Nhip {
-    fn moi(moi_giay: u32) -> Self {
-        Self { khoang: Duration::from_secs_f64(1.0 / f64::from(moi_giay.max(1))), lan_truoc: None }
-    }
-
-    fn cho(&mut self) {
-        let bay_gio = Instant::now();
-        if let Some(t) = self.lan_truoc {
-            let da_qua = bay_gio.duration_since(t);
-            if da_qua < self.khoang {
-                std::thread::sleep(self.khoang - da_qua);
-            }
-        }
-        self.lan_truoc = Some(Instant::now());
-    }
+    let kq = di_bo(&di, root_id, &mut xl, dung)?;
+    let (da_them, da_loai) = xl.thong_ke();
+    Ok(KetQuaQuet {
+        da_them,
+        da_loai,
+        so_thu_muc: kq.so_thu_muc,
+        hoan_tat: kq.hoan_tat,
+        thu_muc_cuoi: xl.thu_muc_cuoi(),
+    })
 }
 
 #[cfg(test)]
