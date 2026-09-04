@@ -3,6 +3,33 @@
 Chỗ bản đặc tả mơ hồ, sai, hoặc lệch với code. Sửa được thì sửa thẳng vào spec rồi ghi lại ở đây.
 
 ---
+
+## SPEC-011 — Initial scan **cũng** phải dùng `io.remote_read_rate` cho root remote
+
+**Nơi:** spec 1.5 mục 4, spec 5.10 "Remote scan" · **Code:** `crates/linux/src/daemon/khoi_dau.rs`
+
+Spec 5.10 viết bucket riêng cho root remote ở mục **"Remote scan"**, tức nhánh
+`lich::viec::quet_remote`. Đọc theo nghĩa hẹp thì initial scan không nằm trong mục ấy —
+và bản Gói D đã đọc theo nghĩa hẹp: `daemon::quet_luc_boot` duyệt `cfg.roots_with_ids()`
+**không lọc `kind`** và dựng một `BoQuet` duy nhất với bucket cục bộ.
+
+Kết quả là trường hợp thứ ba, tệ hơn cả hai lựa chọn: **có** quét root remote, **sai**
+bucket, và **không** ghi chú nào giải thích. Với một `[[watch.remote_roots]]` trỏ vào
+share SMB 300 000 file, lần khởi động đầu tiên `statx` toàn bộ cây ấy qua CIFS ở 40 MiB/s
+(`io.read_rate`) thay vì 20 (`io.remote_read_rate`), giữa ban ngày — pha A không hỏi
+`heavy_windows`. Đúng thứ mục 1.5 dựng bucket riêng ra để tránh.
+
+**Đã chọn:** initial scan **vẫn** quét root remote (nó là thứ điền `file_count` mà guard
+tỷ lệ của `QuetRemote` lấy làm mẫu số), nhưng chọn bucket theo `kind` của **từng** root.
+`BoKhoiDong` nay có `gov_remote`, và `khoi_dau::gov_cua_root` là chỗ quyết định. Đọc
+"bucket riêng cho root remote" là một **tính chất của root**, không phải của nhánh quét.
+
+**Lựa chọn đã bác:** lọc `kind == Local` ở `quet_luc_boot`. Nó rẻ hơn, nhưng để root
+remote không có row nào cho tới lượt `QuetRemote` đầu tiên, và guard tỷ lệ của lượt ấy
+so với `file_count = 0`.
+
+---
+
 ## SPEC-009 — Watcher lúc dừng: xả `Gom` nhưng **không** xả bảng chờ ghép cặp
 
 **Trạng thái:** lệch có chủ ý so với 5.12/5.10, đã hiện thực hóa (Phase 4 Gói C)

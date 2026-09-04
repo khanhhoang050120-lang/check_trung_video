@@ -74,7 +74,13 @@ impl Ban {
     /// Chạy vòng đi bộ thật với một bộ xử lý bất kỳ.
     fn di(&self, xl: &mut dyn XuLyEntry) -> nasdedup_core::walk::KetQuaDiBo {
         let gov = Unlimited;
-        let b = BoDiBo { fs: &self.fs, gov: &gov, dir_moi_giay: DIR_MOI_GIAY, cursor: None };
+        let b = BoDiBo {
+            fs: &self.fs,
+            gov: &gov,
+            dir_moi_giay: DIR_MOI_GIAY,
+            cursor: None,
+            chi_trong: &[],
+        };
         di_bo(&b, ROOT, xl, &|| false).expect("đi bộ")
     }
 

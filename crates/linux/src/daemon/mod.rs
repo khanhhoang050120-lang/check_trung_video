@@ -1,4 +1,4 @@
-//! Các vòng lặp của daemon: khởi động, worker, scheduler (spec 3.1, 5.11).
+//! Khởi động, initial scan và vòng lặp worker của daemon (spec 3.1, 5.10, 5.11).
 //!
 //! Đặt ở đây chứ không ở crate `nasdedup` vì crate đó phụ thuộc `nasdedup-db`, mà
 //! `nasdedup-db` không cross-compile được sang Linux từ máy dev (`rusqlite` cần
@@ -7,6 +7,12 @@
 //!
 //! Mọi vòng lặp đều nhận cờ dừng và hỏi nó thường xuyên: `SIGTERM` không được phải
 //! chờ hết một file 50 GB.
+//!
+//! Vòng lặp scheduler nằm ở [`crate::lich`]: nó đã kéo theo ba phép quét của Phase
+//! 4 và không còn nhét vừa file này nữa. Initial scan nằm ở [`khoi_dau`] vì cùng lý
+//! do — trần 400 dòng — và vì nó là một chủ đề trọn vẹn của riêng nó.
+
+mod khoi_dau;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -14,16 +20,16 @@ use std::time::Duration;
 
 use nasdedup_core::config::Config;
 use nasdedup_core::dedupe::Deduper;
-use nasdedup_core::filter::Prefilter;
 use nasdedup_core::model::{Root, Ts};
 use nasdedup_core::pipeline::StepCtx;
-use nasdedup_core::repo::{RepoError, Repository};
-use nasdedup_core::scheduler::{self, LanCuoi, Viec};
+use nasdedup_core::repo::Repository;
 use nasdedup_core::throttle::IoGovernor;
 use nasdedup_core::{window, worker};
 
-use crate::scan::{BoQuet, ScanError};
+use crate::scan::ScanError;
 use crate::{diskstats, prio, LinuxFs, NasGovernor};
+
+pub use khoi_dau::{quet_luc_boot, quet_mot_root, quet_tat_ca, BoKhoiDong};
 
 /// Cờ dừng dùng chung cho mọi thread.
 #[derive(Clone, Default)]
@@ -127,61 +133,6 @@ pub fn mo_roots(cfg: &Config) -> std::io::Result<LinuxFs> {
     LinuxFs::new(cfg.roots_with_ids().into_iter().map(|d| (d.id, d.path, d.kind)))
 }
 
-/// Initial scan: pha A rồi pha B cho từng root (spec 5.10).
-///
-/// # Errors
-/// Lỗi quét hoặc lỗi ghi kho dữ liệu.
-pub fn quet_toan_bo(
-    repo: &dyn Repository,
-    fs: &LinuxFs,
-    cfg: &Config,
-    gov: &NasGovernor,
-    dung: &CoDung,
-) -> Result<(), ScanError> {
-    let loc = Prefilter::from_config(cfg)
-        .map_err(|e| ScanError::Repo(RepoError::Other(e.to_string())))?;
-    let bq =
-        BoQuet { repo, fs, loc: &loc, gov, settle_delay_ms: cfg.timing.settle_delay.0, lo: 5_000 };
-
-    for d in cfg.roots_with_ids() {
-        if dung.da_dung() {
-            return Ok(());
-        }
-        // Con trỏ của lần chạy trước, nếu có.
-        let tien_do = repo.scan_progress_get(d.id)?;
-        let cursor = tien_do.as_ref().and_then(|p| p.last_completed_dir.clone());
-
-        let kq = pha_a_mot_root(&bq, d.id, cursor.as_deref(), dung)?;
-        tracing::info!(
-            root = d.id,
-            them = kq.da_them,
-            loai = kq.da_loai,
-            thu_muc = kq.so_thu_muc,
-            hoan_tat = kq.hoan_tat,
-            "quét xong pha A"
-        );
-
-        // Pha B **chỉ** chạy khi pha A hoàn tất trọn root: nếu không, những file
-        // chưa được quét sẽ bị coi là "không có bạn cùng kích thước" và thành
-        // `distinct` oan.
-        if kq.hoan_tat {
-            let (danh_thuc, rieng) = repo.scan_phase_b(d.id, bay_gio())?;
-            tracing::info!(root = d.id, danh_thuc, rieng, "quét xong pha B");
-        }
-    }
-    Ok(())
-}
-
-fn pha_a_mot_root(
-    bq: &BoQuet<'_>,
-    root_id: i64,
-    cursor: Option<&std::path::Path>,
-    dung: &CoDung,
-) -> Result<crate::scan::KetQuaQuet, ScanError> {
-    let d = dung.clone();
-    crate::scan::pha_a(bq, root_id, cursor, bay_gio(), &move || d.da_dung())
-}
-
 /// Vòng lặp worker: `next_ready → step → apply` (spec 3.1).
 ///
 /// Ngủ khi hàng đợi rỗng thay vì quay vòng; đó là trạng thái bình thường của daemon
@@ -232,74 +183,8 @@ pub fn vong_worker(
     }
 }
 
-/// Vòng lặp scheduler: lấy mẫu tải, checkpoint, dọn dẹp, kích hoạt quét (5.11).
-pub fn vong_scheduler(
-    repo: &dyn Repository,
-    gov: &NasGovernor,
-    cfg: &Config,
-    dung: &CoDung,
-    sampler: &mut Option<diskstats::Sampler>,
-) {
-    let mut lan_cuoi = LanCuoi::default();
-
-    while !dung.da_dung() {
-        let now = bay_gio();
-        let trong_khung =
-            window::tra(&cfg.timing.heavy_windows, &cfg.timing.timezone, now).trong_khung;
-        // `can_quet_lai` = false: cờ `meta.rescan_needed` do watcher bật, mà watcher
-        // thuộc Phase 4. Nối cờ vào đây trước khi có nhánh `Reconcile` thật chỉ làm
-        // vòng lặp đánh dấu "đã reconcile" mỗi lượt trong khi không quét gì.
-        let viecs = scheduler::den_han(
-            &cfg.timing,
-            &lan_cuoi,
-            now,
-            trong_khung,
-            cfg.io.diskstats_interval.0,
-            false,
-        );
-
-        for v in viecs {
-            match v {
-                Viec::LayMauTai => {
-                    if let Some(s) = sampler.as_mut() {
-                        match s.lay_mau() {
-                            Ok(Some(t)) => gov.nap_tai(t.util_other, now),
-                            Ok(None) => {}
-                            Err(e) => tracing::warn!(loi = %e, "không đọc được /proc/diskstats"),
-                        }
-                    }
-                    lan_cuoi.lay_mau = Some(now);
-                }
-                Viec::Checkpoint => {
-                    if let Err(e) = repo.checkpoint() {
-                        tracing::warn!(loi = %e, "checkpoint thất bại");
-                    }
-                    lan_cuoi.checkpoint = Some(now);
-                }
-                Viec::DonDep => {
-                    match repo.purge(now, cfg.retention_ms()) {
-                        Ok(n) if n > 0 => tracing::info!(so_row = n, "đã dọn dẹp"),
-                        Ok(_) => {}
-                        Err(e) => tracing::warn!(loi = %e, "dọn dẹp thất bại"),
-                    }
-                    lan_cuoi.don_dep = Some(now);
-                }
-                // Ba việc còn lại thuộc Phase 4 (watcher/reconcile/presence). Vẫn ghi
-                // mốc để chúng không tới hạn lại mỗi vòng và làm ngập log.
-                Viec::Reconcile => lan_cuoi.reconcile = Some(now),
-                Viec::Presence => lan_cuoi.presence = Some(now),
-                Viec::QuetRemote => lan_cuoi.quet_remote = Some(now),
-            }
-        }
-
-        let ms =
-            scheduler::ngu_bao_lau(&cfg.timing, &lan_cuoi, bay_gio(), cfg.io.diskstats_interval.0);
-        ngu(dung, Duration::from_millis(u64::try_from(ms).unwrap_or(1000).max(200)));
-    }
-}
-
 /// Ngủ nhưng vẫn tỉnh dậy nhanh khi có cờ dừng.
-fn ngu(dung: &CoDung, tong: Duration) {
+pub(crate) fn ngu(dung: &CoDung, tong: Duration) {
     const NHIP: Duration = Duration::from_millis(200);
     let mut con_lai = tong;
     while con_lai > Duration::ZERO && !dung.da_dung() {

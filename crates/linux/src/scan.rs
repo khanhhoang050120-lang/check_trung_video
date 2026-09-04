@@ -99,7 +99,7 @@ pub fn pha_a(
 ) -> Result<KetQuaQuet, ScanError> {
     let bo = BoXuLy { repo: b.repo, fs: b.fs, loc: b.loc, root_id, now };
     let mut xl = ThemVaoHangDoi::moi(bo, b.settle_delay_ms, b.lo);
-    let di = BoDiBo { fs: b.fs, gov: b.gov, dir_moi_giay: DIR_MOI_GIAY, cursor };
+    let di = BoDiBo { fs: b.fs, gov: b.gov, dir_moi_giay: DIR_MOI_GIAY, cursor, chi_trong: &[] };
 
     let kq = di_bo(&di, root_id, &mut xl, dung)?;
     let (da_them, da_loai) = xl.thong_ke();

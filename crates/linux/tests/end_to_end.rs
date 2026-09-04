@@ -12,6 +12,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![cfg(target_os = "linux")]
 
+// Crate gốc của một test tích hợp là chính file này, nên `mod lich;` trần sẽ đi tìm
+// `tests/lich.rs`. Đặt trong thư mục con để cargo không coi nó là một test target
+// riêng — nếu không, mỗi lần chạy sẽ dựng thêm một binary rỗng.
+#[path = "end_to_end/goi_d.rs"]
+mod goi_d;
+#[path = "end_to_end/lich.rs"]
+mod lich;
+
 use std::path::Path;
 
 use nasdedup_core::config::Config;
@@ -33,12 +41,12 @@ use nasdedup_linux::LinuxFs;
 /// dưới mili-giây bị cắt. Lúc đó `candidates` coi nó là "chưa ổn định" và bỏ qua.
 /// Trong thực tế `settle_delay` là 15 phút nên chênh lệch 1 ms không bao giờ đáng
 /// kể; chỉ test với `settle_delay = 0` mới chạm vào biên này.
-fn luc_nay() -> nasdedup_core::model::Ts {
+pub fn luc_nay() -> nasdedup_core::model::Ts {
     bay_gio() + 60_000
 }
 
 /// Nội dung mp4 hợp lệ dài `n` byte; `seed` khác nhau cho nội dung khác nhau.
-fn mp4(n: usize, seed: u8) -> Vec<u8> {
+pub fn mp4(n: usize, seed: u8) -> Vec<u8> {
     let mut v = vec![0, 0, 0, 0x20];
     v.extend_from_slice(b"ftyp");
     v.resize(n.max(8), 0);
@@ -48,15 +56,15 @@ fn mp4(n: usize, seed: u8) -> Vec<u8> {
     v
 }
 
-struct Ban {
+pub struct Ban {
     _dir: tempfile::TempDir,
-    cfg: Config,
-    repo: MemoryRepository,
-    fs: LinuxFs,
-    loc: Prefilter,
+    pub cfg: Config,
+    pub repo: MemoryRepository,
+    pub fs: LinuxFs,
+    pub loc: Prefilter,
 }
 
-fn dung_ban(files: &[(&str, Vec<u8>)]) -> Ban {
+pub fn dung_ban(files: &[(&str, Vec<u8>)]) -> Ban {
     let dir = tempfile::tempdir().expect("tempdir");
     for (rel, noi_dung) in files {
         let p = dir.path().join(rel);

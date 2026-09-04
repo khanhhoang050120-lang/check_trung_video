@@ -5,6 +5,7 @@
 //! giới mount (không đi lạc sang filesystem khác), nhịp thư mục để không chiếm hết
 //! I/O của NAS, và con trỏ tiến độ để lần chạy bị cắt giữa chừng còn đi tiếp được.
 
+mod loc;
 pub mod mountinfo;
 mod nhip;
 
@@ -18,6 +19,7 @@ use crate::scan::ScanError;
 use crate::LinuxFs;
 use mountinfo::{khac_domain, MoiGan};
 
+use loc::{nhanh_can_di, trong_nhanh};
 pub(crate) use nhip::Nhip;
 
 /// Số byte ước tính cho mỗi entry, dùng để xin phép governor (spec 5.10).
@@ -34,6 +36,20 @@ pub struct BoDiBo<'a> {
     pub dir_moi_giay: u32,
     /// `last_completed_dir` của lần trước; `None` = từ đầu.
     pub cursor: Option<&'a Path>,
+    /// Chỉ đi vào những nhánh này; rỗng = **không lọc**, đi cả root.
+    ///
+    /// Đây là bộ lọc của walk bổ sung (spec 5.9), và nó phải nằm ở **đây** chứ
+    /// không ở tầng `XuLyEntry`. Lọc ở tầng trên thì `di_bo` đã trả giá đầy đủ cho
+    /// mọi entry của cả cây trước khi bộ lọc kịp nói "mục này không cần": một
+    /// `gov.acquire(BYTE_MOI_ENTRY)` và một `lstat` cho **mỗi** file. Với thư viện
+    /// 200 000 file đó là ~800 MiB xin qua token bucket cho một lệnh `mkdir` — và
+    /// vì `mot_vong` chạy walk bổ sung mỗi vòng khi hàng đợi khác rỗng, một lượt
+    /// `rsync` dài giữ daemon ở 100 % duty cycle đi bộ metadata suốt cả lần chép.
+    ///
+    /// Ở đây thì `it.skip_current_dir()` cắt nguyên nhánh: chi phí tỷ lệ với phần
+    /// thật sự cần quét, mà **vẫn chỉ có một** bản cài đặt năm guard — đúng lý do
+    /// walk bổ sung chọn đi từ gốc root thay vì tự `readdir` lấy.
+    pub chi_trong: &'a [PathBuf],
 }
 
 /// Những thứ chụp một lần lúc bắt đầu và không đổi trong suốt lượt đi bộ.
@@ -138,6 +154,15 @@ fn vong(
     let mut nhip = Nhip::moi(c.b.dir_moi_giay);
     let mut dang_mo: Vec<ThuMucMo> = Vec::new();
     let mut bi_cat = false;
+    // Đã gặp một mục không đọc được ở **bất kỳ đâu** trong lượt này chưa.
+    //
+    // Đánh `ban` cho riêng các thư mục đang mở là **không đủ**, và đây là chỗ đã sai:
+    // chúng chỉ là tổ tiên của chỗ lỗi, còn mọi thư mục anh em được đẩy vào ngăn xếp
+    // **sau** đó vẫn mang `ban: false` nên vẫn phát `xong_thu_muc`. Vì `walkdir` đi
+    // theo `sort_by_file_name`, một thư mục như vậy luôn xếp **sau** chỗ lỗi, nên con
+    // trỏ tiếp tục nhảy qua cây con chưa đọc — và lần chạy sau `nen_bo_qua` cắt luôn
+    // cây con ấy. Vĩnh viễn, không lỗi, không log.
+    let mut ban_tu_day = false;
 
     let mut it = walkdir::WalkDir::new(c.goc)
         .sort_by_file_name()
@@ -165,6 +190,9 @@ fn vong(
                 for t in &mut dang_mo {
                     t.ban = true;
                 }
+                // Và mọi thư mục **sẽ** được mở từ đây trở đi cũng vậy: xem chú thích
+                // ở chỗ khai báo.
+                ban_tu_day = true;
                 tracing::warn!(loi = %e, "không đọc được một mục: lượt quét không trọn root");
                 continue;
             }
@@ -186,6 +214,12 @@ fn vong(
                     it.skip_current_dir();
                     continue;
                 }
+                // Ngoài danh sách `chi_trong`: bỏ nguyên cây con. Đây là chỗ tiết
+                // kiệm thật của bộ lọc — xem doc của trường ấy.
+                if !nhanh_can_di(c.b.chi_trong, &rel) {
+                    it.skip_current_dir();
+                    continue;
+                }
                 // Ranh giới mount: khác superblock nghĩa là đã sang filesystem khác,
                 // nơi ta không dedup sang được (spec 5.10). Chỉ hỏi `domain_id` ở
                 // những chỗ ảnh chụp mountinfo nói là điểm gắn.
@@ -195,10 +229,16 @@ fn vong(
                     continue;
                 }
             }
-            dang_mo.push(ThuMucMo { do_sau: entry.depth(), rel, ban: false });
+            dang_mo.push(ThuMucMo { do_sau: entry.depth(), rel, ban: ban_tu_day });
             continue;
         }
         if !entry.file_type().is_file() {
+            continue;
+        }
+        // File nằm trong một thư mục **tổ tiên** của nhánh cần quét vẫn lọt qua
+        // phép cắt ở trên (ta phải đi xuyên qua tổ tiên mới tới được nhánh kia).
+        // Chặn ở đây, **trước** `acquire` và `metadata`, để nó không tốn gì.
+        if !trong_nhanh(c.b.chi_trong, &rel) {
             continue;
         }
 

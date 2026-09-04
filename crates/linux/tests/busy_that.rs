@@ -7,9 +7,10 @@
 //! test đơn vị vẫn xanh, còn daemon thật sẽ tự thấy mình bận rồi tự dừng, rồi lại
 //! chạy — dao động mãi mà không làm xong việc gì.
 //!
-//! Chỗ nối dây ấy chỉ có **một** trong toàn kho: `daemon::vong_scheduler`. Nên lớp 1
-//! dưới đây gọi đúng hàm đó chứ không tự dựng lại đường ống — một test tự nối dây lại
-//! chỉ chứng minh được chính nó đúng, và đó đúng là lỗ hổng của bản trước file này.
+//! Chỗ nối dây ấy chỉ có **một** trong toàn kho: `lich::vong_scheduler` (Phase 4
+//! chuyển nó khỏi `daemon.rs` cùng ba phép quét mới). Nên lớp 1 dưới đây gọi đúng
+//! hàm đó chứ không tự dựng lại đường ống — một test tự nối dây lại chỉ chứng minh
+//! được chính nó đúng, và đó đúng là lỗ hổng của bản trước file này.
 //!
 //! Ba lớp:
 //! 1. `vong_scheduler` **thật** với `Sampler::bom` (nguồn mẫu bơm tay): kiểm daemon
@@ -38,6 +39,7 @@ use nasdedup_core::repo::MemoryRepository;
 use nasdedup_core::throttle::IoGovernor;
 use nasdedup_linux::daemon::{self, CoDung};
 use nasdedup_linux::diskstats::{self, MauDisk, MauTuMinh, Sampler};
+use nasdedup_linux::lich::{self, BoLich, CoScan, HangWalk};
 use nasdedup_linux::NasGovernor;
 
 /// Khoảng giữa hai lần lấy mẫu. Ngắn hơn `diskstats_interval` mặc định (2 s) để test
@@ -172,6 +174,14 @@ fn chay_scheduler(gov: &NasGovernor, cua_minh: bool, kich_ban: KichBan) -> KetQu
     let het_han = Instant::now() + Duration::from_millis(HAN_BAN_MS + HAN_RANH_MS);
     let (da_ban, da_nha) = (AtomicBool::new(false), AtomicBool::new(false));
 
+    // `vong_scheduler` cần thêm bốn thứ từ Phase 4; cấu hình này không khai root
+    // nào nên ba nhánh quét mới đều duyệt qua danh sách rỗng và không đụng đĩa.
+    let fs = nasdedup_linux::LinuxFs::new([]).expect("LinuxFs rỗng");
+    let loc = nasdedup_core::filter::Prefilter::from_config(&cfg).expect("bộ lọc");
+    let gov_remote = NasGovernor::remote(&cau_hinh_rut_ngan());
+    let co_scan = CoScan::moi();
+    let hang_walk = HangWalk::moi();
+
     std::thread::scope(|s| {
         s.spawn(|| {
             while Instant::now() < het_han {
@@ -203,7 +213,18 @@ fn chay_scheduler(gov: &NasGovernor, cua_minh: bool, kich_ban: KichBan) -> KetQu
             }
             dung.dung_lai();
         });
-        daemon::vong_scheduler(&repo, gov, &cfg, &dung, &mut sampler);
+        let b = BoLich {
+            repo: &repo,
+            fs: &fs,
+            loc: &loc,
+            gov,
+            gov_remote: &gov_remote,
+            cfg: &cfg,
+            dung: &dung,
+            co_scan: &co_scan,
+            hang_walk: &hang_walk,
+        };
+        lich::vong_scheduler(&b, &mut sampler);
     });
     KetQuaVong {
         da_ban: da_ban.load(Ordering::Relaxed),

@@ -51,6 +51,10 @@ done
 - [ ] `--workspace` với target Linux thì **không** chạy được: `rusqlite` (feature `bundled`) cần trình biên dịch C chéo. Chỉ kiểm được `-p nasdedup-core` và `-p nasdedup-linux`.
 - [ ] Vì vậy phần Linux của `crates/daemon/src/platform/linux.rs` (phụ thuộc `nasdedup-db`) vẫn chỉ CI mới thấy → giữ file đó **mỏng**, đẩy hết logic xuống `nasdedup-linux`.
 - [ ] Code chạy được thì vẫn phải CI Linux xác nhận: `cargo check` không chạy test, và syscall chỉ lộ lỗi khi thật sự gọi.
+- [ ] **Đừng báo số của `cargo test --workspace` như bằng chứng cho code Linux.** Trên máy dev con số ấy (592) **không chứa một test nào** của `nasdedup-linux`: `cargo test -p nasdedup-linux` cho 10/10 target "running 0 tests". Nói đúng phạm vi: "clippy hai target đã **kiểm kiểu** N test target; **chưa chạy** test nào; chờ CI Linux". Xem ISSUE-012.
+- [ ] `cargo test -p nasdedup-linux --no-run --target …-linux-gnu` **không chạy được** trên máy dev (`linker cc not found`) — `--no-run` cần linker, `clippy` thì không. Đừng ghi nó vào danh sách "đã kiểm chứng" nếu nó chưa từng xanh.
+- [ ] Phần **logic thuần** thì tách ra kiểm chứng được ngay tại chỗ: hoặc một `rustc` đứng riêng trên file ấy, hoặc một test tạm trong `nasdedup-core` (crate ấy build trên Windows). Vẫn phải thử **đỏ khi hoàn tác bản sửa** rồi xóa test tạm đi.
+- [ ] Sau khi đẩy code: đọc **số test của từng target** trong log job `Test`, không chỉ nhìn màu của workflow. Thêm một test file mới mà con số của target ấy không đổi = module chưa được đăng ký.
 
 ## Khi tiêu chí có dạng "sau khi khởi động lại thì X"
 
@@ -115,6 +119,31 @@ Bộ test tương thích dùng chung là điều kiện cần, **không đủ**:
 - [ ] Đầu vào biên của mọi tham số kiểu đường dẫn: rỗng, có `/` ở cuối, chứa `\`, nhiều byte.
 - [ ] Chạy lại cả hai kỹ thuật **mỗi lần thêm một hàm vào trait**, không phải một lần rồi thôi.
 - [ ] Mỗi chỗ lệch tìm được phải thành một kịch bản trong bộ test tương thích, và phải kiểm chứng rằng kịch bản đó **đỏ** khi hoàn tác bản sửa.
+
+## Khi một tiêu chí hoàn thành dựa vào một test `#[ignore]`
+
+`#[ignore]` là đúng cho test dựng 100 000 file hay cần `mount`. Nhưng `cargo test --workspace`
+**bỏ qua** chúng, nên một test `#[ignore]` không có bước CI gọi tên nó là một test **không
+bao giờ chạy** — và tiêu chí dựa vào nó được tích xanh dựa trên sự *tồn tại* của file,
+đúng khuôn BUG-019.
+
+- [ ] `grep` trong `.github/workflows/ci.yml` xem có bước nào gọi `--test <tên file>` với
+      `--ignored` và đúng biến môi trường của nó không. Không có = tiêu chí ấy phải ghi
+      ⚠️ "có test, chưa có runner", **không** được tích xanh.
+- [ ] Bước CI phải có dòng chống xanh giả: `cargo test -- --ignored` mà lọc ra KHÔNG test
+      nào vẫn thoát mã 0. Khuôn: `grep -qE "test result: ok\. [1-9][0-9]* passed"`.
+- [ ] Ghi vào tiêu chí **test ấy đo cái gì**: một test gọi thẳng tầng dưới (`walk::Presence`
+      + `di_bo`) đo **quy mô**, nó không phủ nhánh **ghép nối** ở tầng trên
+      (`lich::viec::presence`). Hai thứ khác nhau, đừng tích một tiêu chí bằng cái kia.
+
+### Trạng thái hiện tại (Phase 4)
+
+| Tiêu chí | Test | Runner CI | Trạng thái |
+| --- | --- | --- | --- |
+| presence 100k file < 10 phút | `tests/presence_lon.rs` | **không có** | ⚠️ có test, chưa đo lần nào — ISSUE-011 |
+| btrfs reflink thật | `tests/btrfs_that.rs` | có (`NASDEDUP_IT_MOUNT`) | ✅ |
+| tốc độ đọc ≤ 1,1 × `read_rate` | `tests/io_that.rs` | có (`NASDEDUP_IT_IO`) | ✅ |
+| phanh đĩa bận trên phần cứng thật | `tests/busy_that.rs` | có (`NASDEDUP_IT_DISK`) | ✅ |
 
 ## Trước khi chuyển sang phase tiếp theo
 

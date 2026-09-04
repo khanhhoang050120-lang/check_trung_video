@@ -4,6 +4,86 @@ Những chỗ cố ý để lại chưa hoàn chỉnh. Khi xử lý xong thì ch
 
 ---
 
+## ISSUE-012 — `cargo test --workspace` trên máy dev **không chạy một test nào** của `nasdedup-linux`
+
+**Từ:** Phase 4 Gói D · **Nơi:** `crates/linux/` (mọi test), `.github/workflows/ci.yml`
+
+`crates/linux/src/lib.rs` bắt đầu bằng `#![cfg(target_os = "linux")]`, nên trên máy dev
+(Windows) cả crate là **rỗng**. `cargo test --workspace` cho 20 + 401 + 164 + 7 = 592 test
+xanh, và **không một test nào trong đó thuộc `nasdedup-linux`**: chạy riêng
+`cargo test -p nasdedup-linux` cho **10/10 target đều "running 0 tests"**. Máy này cũng
+không có WSL (`wsl.exe -l -v` → "not installed"), Docker hay Podman, nên **không có cách
+nào chạy chúng tại chỗ**.
+
+Hệ quả: báo cáo "kiểm chứng đầy đủ đã xanh — 592 passed" là **đúng con số nhưng sai phạm
+vi**. Con số ấy không chứa test nào của Gói D. Nó đúng khuôn BUG-019 (tiêu chí Phase 3
+tích xanh trong khi daemon chưa bao giờ ghi cursor).
+
+**Phạm vi đã kiểm được tại chỗ, nói cho đúng:**
+
+- `cargo clippy --target x86_64-unknown-linux-{gnu,musl} --all-targets -- -D warnings`
+  **kiểm kiểu** toàn bộ 10 test target (kể cả test mới), cả hai libc. Đây là kiểm kiểu,
+  **không** kiểm hành vi.
+- `cargo test -p nasdedup-linux --no-run --target …-linux-gnu` **không chạy được** trên
+  máy dev: `error: linker cc not found`. `cargo check`/`clippy` không cần linker, `--no-run`
+  thì cần. Đây là giới hạn của máy, không phải của mã.
+- Logic **thuần** thì tách ra kiểm chứng được: bộ lọc nhánh (`walk::loc`) đã chạy được
+  bằng một `rustc` đứng riêng, và logic thế hệ `meta.rescan_needed` đã chạy được qua
+  `MemoryRepository` của `nasdedup-core` (crate ấy build trên Windows). Cả hai đều đã
+  được thử **đỏ khi hoàn tác bản sửa**.
+
+**Việc phải làm trước khi merge:** chờ đúng job `Test` (`cargo test --workspace` trên
+`ubuntu-latest`) xanh và **đọc số test của từng target**, không chỉ nhìn màu của cả
+workflow. Riêng `end_to_end` phải có con số lớn hơn hẳn (5 test cũ + 8 test mới của
+`goi_d.rs`); nếu nó vẫn là con số cũ thì module mới chưa được đăng ký.
+
+Hai test dễ chập chờn nhất khi chạy thật, cần đọc kỹ lần đầu:
+`con_tro_quet_duoc_ghi_xuong_kho_du_lieu…` và `luot_quet_tiep_ton_trong_con_tro_doc_tu_kho`
+(cả hai cắt lượt quét sau 400 ms giữa 300 thư mục ở nhịp 200 dir/s), và
+`hai_thread_that_chay_song_song…` (phụ thuộc lịch thread).
+
+---
+
+## ISSUE-011 — `presence_lon.rs` có test nhưng **không có runner**, nên tiêu chí "100k < 10 phút" chưa được đo lần nào
+
+**Từ:** Phase 4 Gói D · **Nơi:** `crates/linux/tests/presence_lon.rs`, `.github/workflows/ci.yml`
+
+Bản thân file test đúng: `#[ignore]` để không làm CI thường chậm, và phần bảo vệ "thiếu
+biến môi trường thì **ĐỎ** chứ không `return` im lặng" cũng đúng. Thứ thiếu là **bước
+CI gọi nó**. `ci.yml` chỉ có ba bước chạy `--ignored`: `btrfs_that` (`NASDEDUP_IT_MOUNT`),
+`io_that` (`NASDEDUP_IT_IO`) và `busy_that` (`NASDEDUP_IT_DISK`). Bước `Test` chung là
+`cargo test --workspace`, mà `--workspace` **bỏ qua** `#[ignore]`.
+
+Nên tiêu chí "presence scan trên root 100k file < 10 phút" đang được tích xanh dựa trên
+**sự tồn tại** của một file test không bao giờ chạy — đúng khuôn BUG-019.
+
+**Chạy tay:**
+
+```sh
+NASDEDUP_TEST_BIG=1 cargo test -p nasdedup-linux --test presence_lon -- --ignored --nocapture
+```
+
+**Bước CI còn thiếu**, khuôn giống ba bước `--ignored` đã có, kèm cả dòng chống xanh giả
+(`cargo test -- --ignored` mà lọc ra KHÔNG test nào vẫn thoát mã 0):
+
+```yaml
+      - name: Presence 100k
+        run: |
+          out=$(NASDEDUP_TEST_BIG=1 cargo test -p nasdedup-linux --test presence_lon                   -- --ignored --test-threads=1 --nocapture 2>&1)
+          echo "$out"
+          if ! echo "$out" | grep -qE "test result: ok\. [1-9][0-9]* passed"; then
+            echo "::error::presence_lon không chạy test nào"; exit 1
+          fi
+```
+
+**Và một giới hạn phải ghi kèm khi tích tiêu chí:** test này đo `walk::Presence` +
+`di_bo` **trực tiếp**, với `Unlimited` và nhịp 100 000 dir/s. Nó **không** đi qua
+`lich::viec::presence`, nên nó không phủ nhánh Gói D (chọn root theo `kind`, guard khung
+giờ, ghi `last_presence_scan`, giá trị trả về quyết định `LanCuoi`). Nó đo **quy mô**,
+không đo **ghép nối**.
+
+---
+
 ## ISSUE-010 — `Repository` thiếu hai truy vấn dải, nên hai guard của watcher phải đi đường vòng
 
 **Từ:** Phase 4 Gói A · **Nơi:** `crates/core/src/repo/mod.rs`
