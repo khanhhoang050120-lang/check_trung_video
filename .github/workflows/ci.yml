@@ -68,6 +68,34 @@ jobs:
           fi
           exit $code
 
+  # Test cần filesystem thật: dựng Btrfs trên file loop rồi kiểm những thứ mà
+  # tmpfs/ext4 không mô phỏng được — nhất là việc mọi subvolume Btrfs đều dùng lại
+  # inode 256/257, nên `(sub_id, ino)` thiếu `sub_id` sẽ coi hai file khác nhau là
+  # một. Runner của GitHub có sudo không mật khẩu nên mount được.
+  btrfs:
+    name: Test trên Btrfs thật
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cài btrfs-progs
+        run: sudo apt-get update && sudo apt-get install -y btrfs-progs
+      - name: Build test
+        run: cargo test -p nasdedup-linux --test btrfs_that --no-run
+      # Chạy bằng sudo vì cần mount. `--ignored` để lấy đúng những test bị đánh dấu
+      # bỏ qua mặc định; `NASDEDUP_IT_MOUNT` là công tắc của chính bộ test.
+      - name: Chạy test Btrfs
+        run: |
+          set +e
+          out=$(sudo -E env "PATH=$PATH" NASDEDUP_IT_MOUNT=1                 cargo test -p nasdedup-linux --test btrfs_that -- --ignored --test-threads=1 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            echo "$out" | grep -E "^(test .* FAILED|assertion|thread)" | head -20 |               while IFS= read -r line; do echo "::error::${line}"; done
+          fi
+          exit $code
+
   # Binary phát hành cho NAS là musl tĩnh (bản đặc tả NFR-4).
   # Không chạy trên pull request vì tốn nhiều phút; chỉ chạy khi đẩy lên main.
   musl:
