@@ -3,6 +3,7 @@
 Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc, cách sửa, bài học.
 
 ---
+
 ## BUG-017 — Hash cũ được đem đi xếp nhóm sau khi file đã đổi
 
 **Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/core/src/pipeline/sized.rs`
