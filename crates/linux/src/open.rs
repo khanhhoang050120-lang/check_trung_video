@@ -166,22 +166,24 @@ struct LinuxFile {
     fd: OwnedFd,
     id: Identity,
     root_domain: DomainId,
-    root_sub: SubId,
+    /// `sub_id` của **file này**; không đổi được suốt đời fd nên lấy một lần là đủ.
+    sub: SubId,
     remote: bool,
     key_remote: Option<FileKey>,
 }
 
 impl LinuxFile {
     fn moi(fd: OwnedFd, root: &Root, loc: &FileLoc) -> Result<Self, FsError> {
-        let id = identity_tu_fd(fd.as_fd(), root, loc).map_err(|e| loi_fs(e, loc))?;
-        Ok(Self {
-            fd,
-            id,
-            root_domain: root.info.domain_id,
-            root_sub: root.info.sub_id,
-            remote: root.kind == RootKind::Remote,
-            key_remote: (root.kind == RootKind::Remote).then_some(id.key),
-        })
+        let remote = root.kind == RootKind::Remote;
+        let sub = sub_cua_file(fd.as_fd(), root).map_err(|e| loi_fs(e, loc))?;
+        let mut id = fstat_identity(fd.as_fd(), root.info.domain_id, sub, remote)
+            .map_err(|e| loi_fs(e, loc))?;
+        let key_remote =
+            remote.then(|| nasdedup_core::model::remote_key(loc.root_id, &loc.rel_path));
+        if let Some(k) = key_remote {
+            id.key = k;
+        }
+        Ok(Self { fd, id, root_domain: root.info.domain_id, sub, remote, key_remote })
     }
 }
 
@@ -227,7 +229,7 @@ impl OpenedFile for LinuxFile {
     fn refresh_identity(&self) -> io::Result<Identity> {
         // `fstat` trên **cùng fd**: nếu ai đó thay file bằng file khác ở cùng đường
         // dẫn, fd này vẫn trỏ vào inode cũ và ta phát hiện được (spec 5.6 bước 5).
-        let mut id = fstat_identity(self.fd.as_fd(), self.root_domain, self.root_sub, self.remote)?;
+        let mut id = fstat_identity(self.fd.as_fd(), self.root_domain, self.sub, self.remote)?;
         if let Some(k) = self.key_remote {
             // Root remote: khóa là hàm thuần của `(root_id, rel_path)`, không phải
             // của inode — server không cấp inode ổn định (spec 4.1).
@@ -368,9 +370,28 @@ fn tung_thanh_phan(dirfd: BorrowedFd<'_>, rel: &Path, flags: i32) -> io::Result<
     cur.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "đường dẫn rỗng"))
 }
 
+/// `sub_id` của **chính file**, không phải của root chứa nó.
+///
+/// Một root Btrfs có thể chứa nhiều subvolume lồng nhau, mỗi cái là một không gian
+/// inode riêng dùng lại inode 256/257. Mượn `sub_id` của root sẽ khiến file đầu tiên
+/// trong mỗi subvolume có cùng `(sub_id, ino)` — daemon coi chúng là **một** file và
+/// ghi đè trạng thái của file này lên file kia (spec 4.1).
+fn sub_cua_file(fd: BorrowedFd<'_>, root: &Root) -> io::Result<SubId> {
+    if root.kind == RootKind::Remote {
+        // Root remote khóa theo `(root_id, rel_path)` chứ không theo inode, nên
+        // `sub_id` không được dùng tới: bỏ hẳn một syscall trên đường mạng.
+        return Ok(root.info.sub_id);
+    }
+    fsdetect::sub_id(fd)
+}
+
 fn identity_tu_fd(fd: BorrowedFd<'_>, root: &Root, loc: &FileLoc) -> io::Result<Identity> {
-    let mut id =
-        fstat_identity(fd, root.info.domain_id, root.info.sub_id, root.kind == RootKind::Remote)?;
+    let mut id = fstat_identity(
+        fd,
+        root.info.domain_id,
+        sub_cua_file(fd, root)?,
+        root.kind == RootKind::Remote,
+    )?;
     if root.kind == RootKind::Remote {
         // Khóa của root remote là hàm thuần của `(root_id, rel_path)` (spec 4.1).
         id.key = nasdedup_core::model::remote_key(loc.root_id, &loc.rel_path);

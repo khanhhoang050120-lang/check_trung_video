@@ -136,6 +136,19 @@ pub fn nhan_dang(fd: BorrowedFd<'_>) -> io::Result<FsInfo> {
     Ok(FsInfo { domain_id: DomainId(domain), sub_id, f_type })
 }
 
+/// Chỉ lấy `sub_id` — không gian inode chứa `fd`.
+///
+/// Tách riêng khỏi [`nhan_dang`] vì đây là đường nóng: mỗi file được quét gọi một
+/// lần, và nó không cần tới `ioctl` lấy UUID superblock.
+///
+/// Phải hỏi **chính fd của file**, không được mượn của root: xem tài liệu module.
+///
+/// # Errors
+/// `fstatfs` thất bại.
+pub fn sub_id(fd: BorrowedFd<'_>) -> io::Result<SubId> {
+    Ok(SubId(tu_fsid(&statfs(fd)?)))
+}
+
 /// Nhận dạng filesystem tại một đường dẫn.
 ///
 /// # Errors

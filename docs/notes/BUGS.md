@@ -4,6 +4,83 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-018 — Mọi file trong một root mượn `sub_id` của root, nên hai subvolume Btrfs bị gộp làm một
+
+**Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/linux/src/open.rs`
+
+**Mức độ: cao nhất từ đầu dự án.** Đây đúng là lỗi mà tài liệu module
+`fsdetect.rs` gọi là "nguy hiểm nhất có thể xảy ra ở tầng này" — và code vẫn mắc.
+
+**Triệu chứng.** Nhóm việc `btrfs` mới thêm trên CI đỏ ngay lần chạy đầu, hai test:
+
+```text
+assertion `left != right` failed: hai file khác nhau ở hai subvolume bị coi là MỘT
+assertion `left == right` failed: phải quét được cả ba file, kể cả trong subvolume lồng nhau
+```
+
+**Nguyên nhân gốc.** `identity_tu_fd` dựng `FileKey` bằng `root.info.sub_id` — tức
+`sub_id` của **thư mục root**, gán một lần lúc đăng ký root — thay vì hỏi `fstatfs`
+trên fd của chính file. Trên Btrfs mỗi subvolume là một không gian inode riêng và
+file đầu tiên trong subvolume nào cũng mang `st_ino = 257`; thế là:
+
+| File | `sub_id` thật | `sub_id` code gán | `ino` |
+| :--- | :--- | :--- | :--- |
+| `sub_a/phim.mp4` | A | **root** | 257 |
+| `sub_b/phim.mp4` | B | **root** | 257 |
+
+Hai file hoàn toàn khác nhau ra cùng một khóa `(sub_id, ino)`.
+
+**Hậu quả nếu lọt.** Nặng hơn "báo cáo sai":
+
+- `scan_insert` dùng `ON CONFLICT DO NOTHING` trên khóa đó, nên file thứ hai trở đi
+  trong mỗi subvolume **biến mất khỏi hàng đợi** mà không có lỗi nào. Đó chính là
+  test thứ hai: quét 3 file, chỉ thấy 1.
+- Với file lọt vào được, trạng thái của file này ghi đè lên file kia — kích thước,
+  hash, nhóm. Sang Phase 5, hai file "cùng khóa" nhưng nội dung khác nhau là đúng
+  điều kiện để `FIDEDUPERANGE` bị gọi lên nhầm cặp. Kernel có so byte nên dữ liệu
+  vẫn an toàn, nhưng daemon sẽ thất bại triền miên mà không hiểu tại sao.
+
+**Cách sửa.** `sub_id` lấy từ fd của chính file, không mượn của root:
+
+```rust
+fn sub_cua_file(fd: BorrowedFd<'_>, root: &Root) -> io::Result<SubId> {
+    if root.kind == RootKind::Remote {
+        // Root remote khóa theo `(root_id, rel_path)`, không dùng tới `sub_id`.
+        return Ok(root.info.sub_id);
+    }
+    fsdetect::sub_id(fd)
+}
+```
+
+`LinuxFile` cũng đổi: field `root_sub` → `sub`, lấy lúc mở. `sub_id` của một inode
+không đổi được suốt đời fd nên lấy một lần là đủ; `refresh_identity` dùng lại nó.
+
+**Giá phải trả.** Thêm một `fstatfs` mỗi lần mở file local. Đã cân nhắc cache theo
+`st_dev` (Btrfs cấp `st_dev` riêng cho mỗi subvolume nên nó là khóa đúng) và **quyết
+định chưa làm**: `fstatfs` không chạm đĩa, còn đường quét vốn đã tốn `openat2` +
+`fstat`. Nếu đo trên NAS thật thấy đáng kể thì thêm cache sau — chỗ cần sửa là
+`sub_cua_file`, không lan ra đâu khác.
+
+**Đã kiểm chứng.** Test còn bổ sung đường `open()` và `refresh_identity()` chứ không
+chỉ `statx()`: ba đường này dựng `Identity` bằng ba lối gọi khác nhau, và trước khi
+sửa thì cả ba đều sai theo cùng một kiểu.
+
+**Bài học — quan trọng hơn bản thân lỗi.**
+
+1. **Viết tài liệu cảnh báo về một lỗi không ngăn được lỗi đó.** `fsdetect.rs` có hẳn
+   một đoạn đầu module nói "`sub_id` **luôn** lấy từ `f_fsid` của chính fd đó", và
+   `nhan_dang()` làm đúng như vậy. Chỗ sai nằm ở nơi *gọi*, cách đó một file.
+2. **400+ test với `MemoryFs` không thấy gì**, vì `MemoryFs` không có khái niệm
+   subvolume: nó cấp inode duy nhất trong toàn bộ không gian giả lập. Mô hình giả lập
+   chỉ kiểm được những gì nó mô phỏng; thứ nó *không có* thì im lặng.
+3. **Test phải khẳng định cả tiền đề.** `assert_eq!(a.key.ino, b.key.ino)` chạy trước
+   là thứ giữ cho test còn ý nghĩa: nếu Btrfs sau này đổi cách cấp inode, test sẽ báo
+   "tiền đề sai" thay vì lặng lẽ xanh mà chẳng kiểm gì.
+4. Đây là **test đầu tiên chạy trên filesystem có nhiều không gian inode**, và nó bắt
+   lỗi ngay lần chạy đầu tiên. Xem CHECKLIST.md, mục "Khi mã chạm tới filesystem".
+
+---
+
 ## BUG-017 — Hash cũ được đem đi xếp nhóm sau khi file đã đổi
 
 **Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/core/src/pipeline/sized.rs`

@@ -52,6 +52,16 @@ done
 - [ ] Vì vậy phần Linux của `crates/daemon/src/platform/linux.rs` (phụ thuộc `nasdedup-db`) vẫn chỉ CI mới thấy → giữ file đó **mỏng**, đẩy hết logic xuống `nasdedup-linux`.
 - [ ] Code chạy được thì vẫn phải CI Linux xác nhận: `cargo check` không chạy test, và syscall chỉ lộ lỗi khi thật sự gọi.
 
+## Khi mã chạm tới filesystem
+
+`MemoryFs` mô phỏng được `open`/`read`/`stat`, nhưng **không** mô phỏng được thứ gây ra lỗi nặng nhất từ đầu dự án: một filesystem có nhiều không gian inode. Xem BUG-018 — 400+ test giả lập xanh trong khi hai file khác nhau bị coi là một.
+
+- [ ] Với mỗi định danh lưu vào DB (`domain_id`, `sub_id`, `ino`), hỏi: nó lấy từ **chính đối tượng** hay mượn của thứ chứa nó? Mượn là sai, trừ khi chứng minh được không thể khác.
+- [ ] Btrfs là filesystem duy nhất trong tầm ngắm có subvolume, nhưng đừng liệt kê trắng theo `f_type`: bcachefs và ZFS cũng có, và cái sai sẽ im lặng. Làm đúng vô điều kiện, tối ưu sau nếu đo thấy tốn.
+- [ ] Test trên filesystem **thật** (`crates/linux/tests/btrfs_that.rs` dựng Btrfs bằng file loop) — CI có nhóm việc riêng, không cần quyền trên NAS.
+- [ ] Test loại này phải khẳng định cả **tiền đề** (`assert_eq!(a.ino, b.ino)` trước khi so khóa), nếu không nó sẽ lặng lẽ xanh khi kernel đổi hành vi.
+- [ ] Một `Identity` dựng được bằng nhiều đường (`statx`, `open`, `refresh_identity`) thì phải kiểm **cả ba**: chúng thường sai cùng kiểu, và test một đường sẽ tưởng đã đủ.
+
 ## Khi có hai bản cài đặt cùng một trait
 
 Bộ test tương thích dùng chung là điều kiện cần, **không đủ**: nó chỉ chứng minh hai bản khớp nhau trên những đầu vào người viết nghĩ tới. Xem BUG-009 và BUG-011 — ba lỗi và chín chỗ lệch lọt qua 38 kịch bản viết tay.

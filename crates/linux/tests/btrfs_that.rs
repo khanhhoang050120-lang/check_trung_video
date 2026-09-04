@@ -127,6 +127,20 @@ fn hai_subvolume_cung_inode_van_la_hai_file_khac_nhau() {
 
     // Cùng superblock nên cùng miền dedupe: chúng share extent được với nhau.
     assert_eq!(a.domain_id, b.domain_id, "cùng filesystem thì cùng domain_id");
+
+    // `open` là đường mà bộ băm và bước xác minh đi, tách biệt với `statx`. Hai đường
+    // mà cho hai khóa khác nhau thì `refresh_identity` sẽ báo "file đã bị thay" ở mọi
+    // file trong subvolume, và không file nào qua nổi bước xác minh.
+    let oa = fs.open(&FileLoc::new(1, "sub_a/phim.mp4")).expect("open a");
+    let ob = fs.open(&FileLoc::new(1, "sub_b/phim.mp4")).expect("open b");
+    assert_eq!(oa.identity().key, a.key, "open và statx phải cho cùng khóa");
+    assert_eq!(ob.identity().key, b.key, "open và statx phải cho cùng khóa");
+    assert_ne!(oa.identity().key, ob.identity().key);
+    assert_eq!(
+        oa.refresh_identity().expect("refresh a").key,
+        a.key,
+        "refresh_identity phải giữ nguyên sub_id của chính file"
+    );
 }
 
 #[test]

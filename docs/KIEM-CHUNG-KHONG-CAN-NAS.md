@@ -9,12 +9,17 @@ Tiêu chí hoàn thành của Phase 3 (bản đặc tả mục 11) gồm sáu đ
 | 2 | `read_bytes` khớp `iostat` ±5 % | Một máy Linux có đĩa | ⬜ |
 | 3 | `should_pause` bật khi chạy `dd`, nhả sau đó | Một máy Linux có đĩa | ⬜ |
 | 4 | Khởi động lại giữa scan → cursor tiếp đúng chỗ | **Không cần gì** | ✅ CI |
-| 5 | Root chứa subvolume Btrfs con được quét | Btrfs (dựng bằng file loop) | ⬜ |
+| 5 | Root chứa subvolume Btrfs con được quét | Btrfs (dựng bằng file loop) | ✅ CI |
 | 6 | `status` phản ánh đúng hàng đợi | **Không cần gì** | ⬜ |
 | 7 | Chạy ≥ 3 ngày với **dữ liệu thật ở quy mô thật** | **Bắt buộc NAS** | ⬜ |
 
 Tiêu chí 4 đã được `crates/linux/tests/end_to_end.rs` kiểm tự động trên CI mỗi lần
 đẩy code. Tiêu chí 6 làm tương tự được.
+
+Tiêu chí 5 do `crates/linux/tests/btrfs_that.rs` đảm nhiệm: CI dựng một Btrfs 512 MiB
+bằng file loop, tạo subvolume lồng nhau, rồi kiểm. **Nhóm việc này bắt được BUG-018
+ngay lần chạy đầu tiên** — lỗi nặng nhất từ đầu dự án, mà 400+ test giả lập không
+thấy. Đó là bằng chứng cụ thể cho lập luận ở mục A bên dưới.
 
 Chỉ **tiêu chí 7** thật sự bắt buộc phải có NAS — và nó thuộc về lúc triển khai chính
 thức, không phải lúc phát triển.
