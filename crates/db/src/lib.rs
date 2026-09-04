@@ -19,6 +19,7 @@ mod decode;
 pub mod error;
 mod lookup;
 mod queue;
+pub mod report;
 pub mod row;
 pub mod schema;
 mod sqlite_repo;

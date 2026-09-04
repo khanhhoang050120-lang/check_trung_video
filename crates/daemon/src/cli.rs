@@ -83,6 +83,12 @@ pub enum Command {
         format: OutputFormat,
         #[arg(long, value_enum, default_value_t = ReportBy::Group)]
         by: ReportBy,
+        /// Số nhóm in ra (mặc định 50).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Chỉ hiện nhóm nằm chéo giữa NAS và máy Windows (mục 1.5).
+        #[arg(long)]
+        cross_machine: bool,
     },
 
     /// Giải thích trạng thái của một file: hash, group, canonical, lịch sử.
@@ -182,7 +188,7 @@ mod tests {
         let c = Cli::try_parse_from(["nasdedup", "report", "--format", "json", "--by", "owner"])
             .unwrap();
         match c.command {
-            Command::Report { format, by } => {
+            Command::Report { format, by, .. } => {
                 assert_eq!(format, OutputFormat::Json);
                 assert_eq!(by, ReportBy::Owner);
             }

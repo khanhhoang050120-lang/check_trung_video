@@ -69,8 +69,11 @@ fn dispatch(cli: &Cli) -> Result<()> {
             let cfg = load_config(&cli.config)?;
             cmd::db::run(&cfg, action)
         }
+        Command::Report { limit, cross_machine, .. } => {
+            let cfg = load_config(&cli.config)?;
+            cmd::report::run(&cfg, *limit, *cross_machine)
+        }
         Command::Status { .. }
-        | Command::Report { .. }
         | Command::Explain { .. }
         | Command::Verify { .. }
         | Command::Pause

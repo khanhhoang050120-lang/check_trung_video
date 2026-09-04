@@ -4,3 +4,4 @@
 
 pub mod check;
 pub mod db;
+pub mod report;
