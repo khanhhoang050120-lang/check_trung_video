@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::model::RootKind;
+
 mod parse;
 mod presets;
 
@@ -225,6 +227,16 @@ pub struct RemoteRootCfg {
     /// Đường dẫn UNC của share, ví dụ `\\192.168.1.214\Video`. Thiếu thì app ẩn
     /// nút mở Explorer thay vì suy đoán (bản chốt mục 1).
     #[serde(default)]
+    pub windows_unc: Option<String>,
+}
+
+/// Một root đã được gán `root_id` (xem [`Config::roots_with_ids`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootDecl {
+    pub id: i64,
+    pub path: PathBuf,
+    pub kind: RootKind,
+    pub label: Option<String>,
     pub windows_unc: Option<String>,
 }
 
@@ -585,6 +597,47 @@ impl Config {
         self.general.state_dir.join("nasdedup.db")
     }
 
+    /// Danh sách root kèm `root_id` cố định (spec 5.11.1 bước 3).
+    ///
+    /// Quy ước đánh số nằm ở **một chỗ duy nhất** này: root cục bộ 1..n theo thứ tự
+    /// khai báo, rồi root remote n+1... Trước đây quy ước ấy nằm rải rác — bước khởi
+    /// động đánh số một kiểu, còn `report` tự tính lại bằng phép trừ chỉ số, và hai
+    /// bên chỉ cần lệch một là báo cáo trỏ sai máy.
+    ///
+    /// `root_id` phải ổn định qua các lần khởi động vì nó là một nửa của khóa
+    /// `(root_id, rel_path)`; đổi thứ tự khai báo root trong cấu hình sẽ làm daemon
+    /// coi mọi file là mới.
+    #[must_use]
+    pub fn roots_with_ids(&self) -> Vec<RootDecl> {
+        let mut out = Vec::new();
+        for (i, p) in self.watch.roots.iter().enumerate() {
+            out.push(RootDecl {
+                id: i64::try_from(i).unwrap_or(0) + 1,
+                path: p.clone(),
+                kind: RootKind::Local,
+                label: None,
+                windows_unc: None,
+            });
+        }
+        let base = i64::try_from(self.watch.roots.len()).unwrap_or(0);
+        for (i, r) in self.watch.remote_roots.iter().enumerate() {
+            out.push(RootDecl {
+                id: base + i64::try_from(i).unwrap_or(0) + 1,
+                path: r.path.clone(),
+                kind: RootKind::Remote,
+                label: r.label.clone(),
+                windows_unc: r.windows_unc.clone(),
+            });
+        }
+        out
+    }
+
+    /// Khai báo của một root theo `root_id`.
+    #[must_use]
+    pub fn root_by_id(&self, id: i64) -> Option<RootDecl> {
+        self.roots_with_ids().into_iter().find(|r| r.id == id)
+    }
+
     /// Retention của `dedup_events` tính bằng milliseconds.
     #[must_use]
     pub fn retention_ms(&self) -> i64 {
@@ -925,5 +978,54 @@ remote_verify = "hash_only"
         let s = toml::to_string(&c).unwrap();
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(c, back);
+    }
+}
+
+#[cfg(test)]
+mod root_id_tests {
+    use super::*;
+
+    fn cfg(toml: &str) -> Config {
+        Config::from_toml(toml).expect("cấu hình")
+    }
+
+    #[test]
+    fn root_cuc_bo_danh_so_tu_1_roi_toi_root_remote() {
+        let c = cfg("[watch]\nroots = [\"/volume1/video\", \"/volume2/phim\"]\n\n\
+             [[watch.remote_roots]]\npath = \"/mnt/win214\"\nlabel = \"windows-214\"\n\
+             windows_unc = '\\\\192.168.1.214\\Video'\n");
+        let r = c.roots_with_ids();
+        assert_eq!(r.len(), 3);
+        assert_eq!((r[0].id, r[0].kind), (1, RootKind::Local));
+        assert_eq!((r[1].id, r[1].kind), (2, RootKind::Local));
+        assert_eq!((r[2].id, r[2].kind), (3, RootKind::Remote));
+        assert_eq!(r[2].label.as_deref(), Some("windows-214"));
+        assert_eq!(r[2].windows_unc.as_deref(), Some(r"\\192.168.1.214\Video"));
+    }
+
+    #[test]
+    fn tra_duoc_root_theo_id() {
+        let c = cfg("[watch]\nroots = [\"/a\"]\n\n[[watch.remote_roots]]\npath = \"/mnt/b\"\n");
+        assert_eq!(c.root_by_id(1).expect("root 1").kind, RootKind::Local);
+        assert_eq!(c.root_by_id(2).expect("root 2").kind, RootKind::Remote);
+        assert!(c.root_by_id(3).is_none());
+        assert!(c.root_by_id(0).is_none());
+    }
+
+    #[test]
+    fn khong_co_root_remote_thi_chi_co_root_cuc_bo() {
+        let c = cfg("[watch]\nroots = [\"/a\", \"/b\", \"/c\"]\n");
+        let r = c.roots_with_ids();
+        assert_eq!(r.len(), 3);
+        assert!(r.iter().all(|x| x.kind == RootKind::Local));
+        assert_eq!(r.iter().map(|x| x.id).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn id_on_dinh_giua_hai_lan_goi() {
+        // `root_id` là một nửa của khóa `(root_id, rel_path)` cho root remote; nó
+        // đổi thì daemon coi toàn bộ thư viện trên máy Windows là file mới.
+        let c = cfg("[watch]\nroots = [\"/a\"]\n\n[[watch.remote_roots]]\npath = \"/mnt/b\"\n");
+        assert_eq!(c.roots_with_ids(), c.roots_with_ids());
     }
 }

@@ -92,11 +92,12 @@ fn in_nhom(cfg: &Config, n: &Nhom) {
 }
 
 /// `windows_unc` của một root remote, nếu người dùng đã khai trong cấu hình.
-fn unc_cua(cfg: &Config, root_id: i64) -> Option<&str> {
-    // Root remote được đánh số theo thứ tự khai báo, bắt đầu từ 2 (root 1 là root
-    // cục bộ đầu tiên). Đây là quy ước của bước đăng ký root lúc khởi động.
-    let idx = usize::try_from(root_id).ok()?.checked_sub(cfg.watch.roots.len() + 1)?;
-    cfg.watch.remote_roots.get(idx)?.windows_unc.as_deref()
+///
+/// Dùng `Config::root_by_id` chứ không tự tính chỉ số: quy ước đánh số `root_id`
+/// nằm ở đúng một chỗ trong `config.rs`. Bản trước tự trừ chỉ số ở đây, và chỉ cần
+/// lệch một là báo cáo trỏ sai máy.
+fn unc_cua(cfg: &Config, root_id: i64) -> Option<String> {
+    cfg.root_by_id(root_id)?.windows_unc
 }
 
 /// Byte sang chuỗi người đọc được.
@@ -137,7 +138,7 @@ mod tests {
         )
         .expect("cấu hình");
         // Một root cục bộ (id 1) rồi tới root remote đầu tiên (id 2).
-        assert_eq!(unc_cua(&cfg, 2), Some(r"\\192.168.1.214\Video"));
+        assert_eq!(unc_cua(&cfg, 2).as_deref(), Some(r"\\192.168.1.214\Video"));
         assert_eq!(unc_cua(&cfg, 1), None, "root cục bộ không có UNC");
         assert_eq!(unc_cua(&cfg, 99), None);
     }

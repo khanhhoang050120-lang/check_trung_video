@@ -22,4 +22,6 @@ notify = "8.2"
 walkdir = "2"
 
 [dev-dependencies]
+# Bộ test tương thích và `MemoryRepository` cho test tích hợp.
+nasdedup-core = { workspace = true, features = ["test-support"] }
 tempfile = "3"
