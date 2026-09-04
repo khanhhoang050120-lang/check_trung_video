@@ -4,6 +4,30 @@ Những chỗ cố ý để lại chưa hoàn chỉnh. Khi xử lý xong thì ch
 
 ---
 
+## ISSUE-009 — Phần chưa làm của Phase 3
+
+**Từ:** Phase 3 · **Nơi:** `crates/linux/`, `crates/daemon/`
+
+Đã xong: nhận dạng FS, `LinuxFs`, throttle đầy đủ (token bucket + phát hiện đĩa bận +
+`pause` thủ công), bộ lập lịch, scan pha A và B, `report`, `status`, control socket,
+và `nasdedup run` chạy end-to-end ở chế độ chỉ báo cáo.
+
+Chưa làm, cố ý để lại:
+
+- **Số liệu soak** (bước 7, cũng là tiêu chí hoàn thành chính): cần chạy ≥ 3 ngày trên
+  NAS thật và đo `iostat`. Kịch bản `scripts/do-soak.sh` đã sẵn sàng; bảng số liệu
+  trong `PERF.md` còn trống. **Phase 3 chưa được coi là xong cho tới khi có số liệu
+  này.**
+- **Probe backend** (`volumes.backend` vẫn là chưa probe): thuộc Phase 5, vì Phase 3
+  cố ý chỉ chạy `DryRunDeduper`.
+- **`nasdedup explain <path>`** và **`verify <path>`**: cần FIEMAP, thuộc Phase 5.
+- **`scan --root <path>`**: hiện báo lỗi rõ ràng thay vì âm thầm quét hết; cần bộ lọc
+  theo root, thuộc Phase 4.
+- **Delta reconcile và presence scan**: scheduler đã có chỗ cho chúng và ghi mốc thời
+  gian, nhưng thân hàm thuộc Phase 4 (watcher).
+
+---
+
 ## ISSUE-008 — Phần chưa làm của Phase 2
 
 **Từ:** Phase 2 · **Nơi:** `crates/core/src/`

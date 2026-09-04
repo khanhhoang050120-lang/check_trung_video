@@ -3,6 +3,40 @@
 Mỗi mục: quyết định gì, vì sao, đã loại phương án nào. Không xóa mục cũ; nếu đảo ngược thì thêm mục mới trỏ ngược lại.
 
 ---
+## DEC-021 — Control socket dùng giao thức văn bản một dòng
+
+**Ngày:** 2026-09-04 · **Phase:** 3
+
+`state_dir/control.sock` (Unix domain, 0600). Giao thức: một dòng lệnh vào
+(`ping`/`pause`/`resume`/`status`), một hoặc vài dòng văn bản ra, rồi đóng kết nối.
+
+**Vì sao không JSON.** Đường điều khiển là thứ ta cần nhất **khi mọi thứ khác đã
+hỏng**. Văn bản một dòng chẩn đoán được bằng
+
+```sh
+socat - UNIX-CONNECT:/var/lib/nasdedup/control.sock
+```
+
+và không thêm phụ thuộc nào vào con đường mà một lỗi phân tích cú pháp có thể khiến
+daemon không dừng được. API JSON/HTTP cho ứng dụng desktop là chuyện của Phase 6, có
+xác thực riêng và không đi qua socket này.
+
+**Mỗi kết nối một lệnh.** Không giữ trạng thái phiên, và một client treo không chặn
+được client khác. Đổi lại là vài syscall thừa cho mỗi lệnh — không đáng kể với thứ
+người ta gõ vài lần một ngày.
+
+**Socket cũng là chốt chống hai daemon.** `mo()` thử **kết nối** vào file socket cũ
+trước khi xóa nó: kết nối được nghĩa là có daemon đang sống, và ta phải từ chối khởi
+động thay vì cướp socket. Hai tiến trình cùng ghi một SQLite là hỏng dữ liệu, nên đây
+là kiểm tra bắt buộc chứ không phải tiện nghi. Có test riêng cho cả hai nhánh: file
+rác còn sót sau `kill -9` thì dọn được, còn daemon đang sống thì bị từ chối.
+
+**Quyền là thật, không phải hình thức.** Ai mở được socket thì dừng được daemon.
+`state_dir` là 0700 và socket được `chmod` 0600 tường minh, để một `umask` lỏng lẻo
+không mở rộng quyền ra ngoài.
+
+---
+
 ## DEC-020 — Quyết định của scheduler tách khỏi vòng lặp của nó
 
 **Ngày:** 2026-09-04 · **Phase:** 3

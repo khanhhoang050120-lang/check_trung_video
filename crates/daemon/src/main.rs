@@ -77,11 +77,11 @@ fn dispatch(cli: &Cli) -> Result<()> {
             let cfg = load_config(&cli.config)?;
             cmd::status::run(&cfg)
         }
-        Command::Explain { .. }
-        | Command::Verify { .. }
-        | Command::Pause
-        | Command::Resume
-        | Command::Audit { .. } => {
+        Command::Pause | Command::Resume => {
+            let cfg = load_config(&cli.config)?;
+            cmd::dieu_khien::chay(&cfg, matches!(cli.command, Command::Pause))
+        }
+        Command::Explain { .. } | Command::Verify { .. } | Command::Audit { .. } => {
             anyhow::bail!("lệnh này cần control socket của daemon: xem mục 11, Phase 3")
         }
     }

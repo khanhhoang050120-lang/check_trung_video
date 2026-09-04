@@ -4,5 +4,6 @@
 
 pub mod check;
 pub mod db;
+pub mod dieu_khien;
 pub mod report;
 pub mod status;

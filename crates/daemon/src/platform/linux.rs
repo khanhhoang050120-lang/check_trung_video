@@ -13,6 +13,7 @@ use nasdedup_core::dedupe::DryRunDeduper;
 use nasdedup_core::repo::Repository;
 use nasdedup_core::Config;
 use nasdedup_db::DbHandle;
+use nasdedup_linux::control;
 use nasdedup_linux::daemon::{self, dat_bay_tin_hieu, CoDung};
 use nasdedup_linux::NasGovernor;
 
@@ -52,13 +53,23 @@ pub fn run_daemon(cfg: &Config) -> Result<()> {
     // Phase 3 chạy report-only: chưa probe backend, chưa ghi gì lên đĩa (mục 11).
     let deduper = DryRunDeduper { verify: cfg.general.report_verify };
 
+    // Mở control socket **trước** khi chạy bất cứ thứ gì: nó cũng là chốt chống hai
+    // daemon cùng ghi một database.
+    let sock = control::mo(&cfg.general.state_dir).with_context(|| {
+        format!("không mở được control socket trong {}", cfg.general.state_dir.display())
+    })?;
+
     tracing::info!(
         db = %cfg.db_path().display(),
         so_root = cfg.roots_with_ids().len(),
+        socket = %control::duong_dan(&cfg.general.state_dir).display(),
         "daemon khởi động ở chế độ chỉ báo cáo"
     );
 
     std::thread::scope(|s| {
+        let (k_gov, k_dung) = (Arc::clone(&gov), dung.clone());
+        s.spawn(move || control::phuc_vu(&sock, &k_gov, &k_dung));
+
         let (c_db, c_gov, c_cfg, c_dung) = (db.clone(), Arc::clone(&gov), cfg, dung.clone());
         s.spawn(move || {
             let mut sampler = daemon::sampler_cho(c_cfg);
@@ -76,6 +87,9 @@ pub fn run_daemon(cfg: &Config) -> Result<()> {
             daemon::vong_worker(&w_db, &w_fs, &w_gov, &deduper, cfg, &w_dung);
         });
     });
+
+    // Dọn socket để lần khởi động sau không phải đoán xem nó còn sống hay không.
+    let _ = std::fs::remove_file(control::duong_dan(&cfg.general.state_dir));
 
     // Đóng WAL sạch trước khi thoát để lần khởi động sau không phải phát lại.
     if let Err(e) = db.checkpoint() {

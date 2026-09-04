@@ -50,10 +50,16 @@ pub fn run(cfg: &Config) -> Result<()> {
     in_roots(cfg, &repo)?;
     in_volumes(&repo)?;
 
-    println!(
-        "\nTrạng thái throttle và file đang xử lý cần control socket của daemon\n\
-         (chưa có: xem mục 11, Phase 3 bước 6)."
-    );
+    // Phần chỉ tồn tại trong bộ nhớ daemon đang chạy; đọc DB không thấy được.
+    match super::dieu_khien::trang_thai_song(cfg) {
+        Some(t) => {
+            println!("\nDaemon đang chạy — throttle");
+            for dong in t.lines() {
+                println!("  {dong}");
+            }
+        }
+        None => println!("\nDaemon không chạy (hoặc không kết nối được control socket)."),
+    }
     Ok(())
 }
 
