@@ -5,24 +5,33 @@ Tiêu chí hoàn thành của Phase 3 (bản đặc tả mục 11) gồm sáu đ
 
 | # | Tiêu chí | Cần gì | Đã có chưa |
 | :-- | :--- | :--- | :--- |
-| 1 | `rkB/s` trung bình ≤ 1,1 × `read_rate` | Một máy Linux có đĩa | ⬜ |
-| 2 | `read_bytes` khớp `iostat` ±5 % | Một máy Linux có đĩa | ⬜ |
-| 3 | `should_pause` bật khi chạy `dd`, nhả sau đó | Một máy Linux có đĩa | ⬜ |
+| 1 | `rkB/s` trung bình ≤ 1,1 × `read_rate` | Một máy Linux có đĩa | ✅ CI |
+| 2 | `read_bytes` khớp `iostat` ±5 % | Một máy Linux có đĩa | ✅ CI |
+| 3 | `should_pause` bật khi chạy `dd`, nhả sau đó | Một máy Linux có đĩa | ✅ CI |
 | 4 | Khởi động lại giữa scan → cursor tiếp đúng chỗ | **Không cần gì** | ✅ CI |
 | 5 | Root chứa subvolume Btrfs con được quét | Btrfs (dựng bằng file loop) | ✅ CI |
-| 6 | `status` phản ánh đúng hàng đợi | **Không cần gì** | ⬜ |
+| 6 | `status` phản ánh đúng hàng đợi | **Không cần gì** | ✅ CI |
 | 7 | Chạy ≥ 3 ngày với **dữ liệu thật ở quy mô thật** | **Bắt buộc NAS** | ⬜ |
 
-Tiêu chí 4 đã được `crates/linux/tests/end_to_end.rs` kiểm tự động trên CI mỗi lần
-đẩy code. Tiêu chí 6 làm tương tự được.
+Tiêu chí 4 và 6 không cần máy đặc biệt nào: chúng chạy mỗi lần `cargo test`, kể cả
+trên máy Windows của người phát triển.
 
 Tiêu chí 5 do `crates/linux/tests/btrfs_that.rs` đảm nhiệm: CI dựng một Btrfs 512 MiB
 bằng file loop, tạo subvolume lồng nhau, rồi kiểm. **Nhóm việc này bắt được BUG-018
 ngay lần chạy đầu tiên** — lỗi nặng nhất từ đầu dự án, mà 400+ test giả lập không
 thấy. Đó là bằng chứng cụ thể cho lập luận ở mục A bên dưới.
 
-Chỉ **tiêu chí 7** thật sự bắt buộc phải có NAS — và nó thuộc về lúc triển khai chính
-thức, không phải lúc phát triển.
+**Sáu trên bảy đã xong, và không cần xin quyền gì.** Chỉ **tiêu chí 7** thật sự bắt buộc
+phải có NAS — và nó thuộc về lúc triển khai chính thức, không phải lúc phát triển.
+
+Ba nhóm việc CI đảm nhiệm:
+
+| Nhóm việc | Tiêu chí | File test |
+| :--- | :--- | :--- |
+| `Đo throttle trên đĩa thật` | 1, 2 | `crates/linux/tests/io_that.rs` |
+| `Đo throttle trên đĩa thật` | 3 | `crates/linux/tests/busy_that.rs` |
+| `Test trên Btrfs thật` | 5 | `crates/linux/tests/btrfs_that.rs` |
+| `Kiểm tra đầy đủ trên Linux` | 4, 6 | `end_to_end.rs`, `cmd/status/tests.rs` |
 
 ---
 

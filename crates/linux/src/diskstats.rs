@@ -87,16 +87,37 @@ pub struct TaiDia {
     pub util_other: f64,
 }
 
+/// Nguồn số liệu thô cho một lần lấy mẫu, dùng thay `/proc` trong test tích hợp.
+type NguonMau = Box<dyn FnMut() -> io::Result<(MauDisk, MauTuMinh)> + Send>;
+
 /// Bộ lấy mẫu: giữ mẫu trước để tính hiệu.
 pub struct Sampler {
     dev: String,
     truoc: Option<(MauDisk, MauTuMinh, Instant)>,
+    /// `None` = đọc `/proc` thật (mọi đường chạy production).
+    nguon: Option<NguonMau>,
 }
 
 impl Sampler {
     #[must_use]
     pub fn moi(dev: impl Into<String>) -> Self {
-        Self { dev: dev.into(), truoc: None }
+        Self { dev: dev.into(), truoc: None, nguon: None }
+    }
+
+    /// Bộ lấy mẫu lấy số từ `nguon` thay vì `/proc`.
+    ///
+    /// Vì sao code sản phẩm lại có lối vào này: đường dây thật
+    /// (`daemon::vong_scheduler` → [`tinh_tai`] → `NasGovernor::nap_tai`) chỉ kiểm
+    /// được khi test **điều khiển được con số**. Với `/proc` thật trên một runner
+    /// dùng chung thì `util` và `util_other` gần bằng nhau, nên nạp nhầm `util` thay
+    /// `util_other` — lỗi khiến daemon tự thấy mình bận rồi tự dừng mãi mãi — lọt
+    /// qua mọi test. Xem `crates/linux/tests/busy_that.rs`.
+    #[must_use]
+    pub fn bom(
+        dev: impl Into<String>,
+        nguon: impl FnMut() -> io::Result<(MauDisk, MauTuMinh)> + Send + 'static,
+    ) -> Self {
+        Self { dev: dev.into(), truoc: None, nguon: Some(Box::new(nguon)) }
     }
 
     /// Bộ lấy mẫu cho thiết bị chứa một đường dẫn.
@@ -122,10 +143,7 @@ impl Sampler {
     /// # Errors
     /// Không đọc được `/proc/diskstats`.
     pub fn lay_mau(&mut self) -> io::Result<Option<TaiDia>> {
-        let d = doc_diskstats(&self.dev)?;
-        // Kernel không bật IO accounting thì coi như daemon không đọc gì: kết quả
-        // sẽ bảo thủ (util_other cao), tức là daemon nhường đường nhiều hơn cần.
-        let m = doc_io_cua_minh().unwrap_or_default();
+        let (d, m) = self.doc_mot_lan()?;
         let bay_gio = Instant::now();
 
         let Some((d0, m0, t0)) = self.truoc.replace((d, m, bay_gio)) else {
@@ -136,6 +154,17 @@ impl Sampler {
             return Ok(None);
         }
         Ok(Some(tinh_tai(&d0, &d, &m0, &m, ms)))
+    }
+
+    /// Một lần đọc số liệu thô: `/proc`, hoặc nguồn bơm tay nếu có.
+    fn doc_mot_lan(&mut self) -> io::Result<(MauDisk, MauTuMinh)> {
+        if let Some(f) = self.nguon.as_mut() {
+            return f();
+        }
+        let d = doc_diskstats(&self.dev)?;
+        // Kernel không bật IO accounting thì coi như daemon không đọc gì: kết quả
+        // sẽ bảo thủ (util_other cao), tức là daemon nhường đường nhiều hơn cần.
+        Ok((d, doc_io_cua_minh().unwrap_or_default()))
     }
 }
 
@@ -244,6 +273,23 @@ mod tests {
         let mut s = Sampler::moi("khong-ton-tai-dau");
         let e = s.lay_mau().expect_err("phải lỗi");
         assert!(format!("{e}").contains("khong-ton-tai-dau"), "{e}");
+    }
+
+    #[test]
+    fn nguon_bom_thay_han_proc_khong_doc_dia_that() {
+        // Nếu `doc_mot_lan` lỡ vẫn đọc `/proc`, test tích hợp lớp 2 sẽ đo tải thật
+        // của runner: hết đỏ được, và hết chứng minh được điều nó hứa.
+        let mut d = MauDisk::default();
+        let mut s = Sampler::bom("khong-ton-tai-dau", move || {
+            d.io_ticks_ms += 1_000_000;
+            d.sectors_read += 2048;
+            Ok((d, MauTuMinh::default()))
+        });
+        assert!(s.lay_mau().expect("nguồn bơm không được lỗi").is_none(), "lần đầu chưa có gì");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let t = s.lay_mau().expect("nguồn bơm không được lỗi").expect("lần hai phải có mẫu");
+        assert_eq!(t.util, 1.0, "tên thiết bị không có thật mà vẫn ra số: nguồn bơm đã thắng");
+        assert_eq!(t.util_other, 1.0, "/proc/self/io không được đụng tới");
     }
 
     #[test]

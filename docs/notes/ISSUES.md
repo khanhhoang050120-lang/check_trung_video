@@ -23,9 +23,12 @@ Chưa làm, cố ý để lại:
   triển không có quyền quản trị trên NAS 192.168.1.213 lẫn máy Windows 192.168.1.214;
   quyền đó thuộc về cấp trên. Đã soạn `docs/YEU-CAU-QUYEN.md` để xin phép.
 
-  Trong sáu tiêu chí hoàn thành, chỉ **một** thật sự cần NAS (chạy ≥ 3 ngày với dữ
-  liệu thật ở quy mô thật). Năm tiêu chí còn lại đo được trên bất kỳ máy Linux nào,
-  và ba trong số đó viết thành test CI được — xem `docs/KIEM-CHUNG-KHONG-CAN-NAS.md`.
+  **Đã xử lý phần xử lý được** (2026-09-04): sáu trong bảy tiêu chí hoàn thành giờ là
+  test tự động chạy trên CI mỗi lần đẩy code, không cần quyền gì của ai — xem
+  `docs/KIEM-CHUNG-KHONG-CAN-NAS.md`. Chỉ còn tiêu chí 7 (chạy ≥ 3 ngày với dữ liệu
+  thật ở quy mô thật) là bắt buộc phải có NAS, và nó thuộc về lúc triển khai chính
+  thức chứ không phải lúc phát triển. Cách biến tiêu chí thành test đã tự chứng minh
+  giá trị: nhóm việc Btrfs bắt được BUG-018 ngay lần chạy đầu tiên.
   Không tìm cách vòng qua kiểm soát truy cập.
 - **Probe backend** (`volumes.backend` vẫn là chưa probe): thuộc Phase 5, vì Phase 3
   cố ý chỉ chạy `DryRunDeduper`.

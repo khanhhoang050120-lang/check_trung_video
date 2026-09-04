@@ -52,6 +52,32 @@ done
 - [ ] Vì vậy phần Linux của `crates/daemon/src/platform/linux.rs` (phụ thuộc `nasdedup-db`) vẫn chỉ CI mới thấy → giữ file đó **mỏng**, đẩy hết logic xuống `nasdedup-linux`.
 - [ ] Code chạy được thì vẫn phải CI Linux xác nhận: `cargo check` không chạy test, và syscall chỉ lộ lỗi khi thật sự gọi.
 
+## Khi viết test cho một tiêu chí đo lường
+
+Lần đầu viết test cho tiêu chí "tốc độ đọc ≤ 1,1 × `read_rate`", bản làm ra tự viết
+vòng `while` gọi `gov.acquire(...)` rồi khẳng định `gov.consumed()` đúng. Nó xanh, trông
+rất thuyết phục, và không chạm một dòng nào của mã sản phẩm: nó chứng minh
+`48 × 262144 = 12582912`. Ba người soi độc lập đều chỉ ra cùng một điểm này.
+
+- [ ] Chỉ ra **dòng mã sản phẩm** cụ thể mà test bảo vệ (ở đây: `gov.acquire(d.len)` trong
+      `hash.rs`, `gov.acquire(2 * n)` trong `dedupe.rs`). Không chỉ ra được thì test không
+      bảo vệ gì cả.
+- [ ] Gọi **hàm thật** của sản phẩm, đừng tự cài lại vòng lặp tương đương. Dựng đối
+      tượng qua đường cấu hình thật (`NasGovernor::cuc_bo(&IoCfg)`) chứ đừng dựng thẳng
+      bằng hằng số — dây nối cấu hình → hành vi cũng là thứ cần bảo vệ.
+- [ ] Chọn tham số sao cho lỗi định bắt **thật sự lộ ra**. Ví dụ: muốn bắt lỗi hoán vị
+      `(rate, burst)` thì phải đặt `burst > rate`; với `burst < rate` thì hoán vị chỉ làm
+      daemon đọc **chậm hơn** và mọi khẳng định vẫn xanh.
+- [ ] Phân biệt **tiền đề** với **hằng đúng**. `assert_eq!(consumed, số ta vừa tự cộng)`
+      không phải tiền đề — nó không đỏ được. Tiền đề thật là thứ môi trường có thể làm
+      sai (`DedupeOutcome::Same`, `a.ino == b.ino`, cache đã bị đẩy ra chưa).
+- [ ] Test chạy vòng lặp chờ phải có **đồng hồ canh chừng**. `TokenBucket::acquire` là
+      `loop { try_take; sleep }` không giới hạn: lỗi định bắt lại khiến nó **treo vĩnh viễn**
+      chứ không phải chạy chậm, và `assert!` đặt sau đó không bao giờ chạy tới.
+- [ ] Công tắc bật/tắt bằng biến môi trường: thiếu biến thì **đỏ**, đừng `return` im lặng.
+      `#[ignore]` đã đủ để `cargo test` thường bỏ qua; một lớp gác thứ hai mà "xanh" khi
+      thiếu biến chỉ tạo thêm đường xanh giả. Đổi lại, CI phải gọi từng `--test <tên>`.
+
 ## Khi mã chạm tới filesystem
 
 `MemoryFs` mô phỏng được `open`/`read`/`stat`, nhưng **không** mô phỏng được thứ gây ra lỗi nặng nhất từ đầu dự án: một filesystem có nhiều không gian inode. Xem BUG-018 — 400+ test giả lập xanh trong khi hai file khác nhau bị coi là một.

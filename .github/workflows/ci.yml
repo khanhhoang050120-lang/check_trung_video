@@ -96,6 +96,56 @@ jobs:
           fi
           exit $code
 
+  # Đo thật trên đĩa: ba tiêu chí hoàn thành của Phase 3 vốn được viết là "chạy
+  # trên NAS rồi đọc `iostat`". Chúng không cần NAS — chỉ cần một đĩa block thật, mà
+  # runner của GitHub có. Biến chúng thành test là để chúng chạy lại mỗi lần sửa code,
+  # thay vì đo một lần rồi thôi.
+  #
+  # `--test-threads=1`: `/proc/self/io` và `/proc/diskstats` là số liệu toàn cục, hai
+  # test đo song song sẽ làm bẩn số của nhau.
+  #
+  # Gọi từng `--test <tên>` một, không gộp: khi thiếu biến môi trường, các test này
+  # **đỏ có chủ đích** thay vì trả về im lặng — một đường xanh giả còn tệ hơn không
+  # có test (bài học BUG-018). Đổi lại, `cargo test -p nasdedup-linux -- --ignored`
+  # gộp cả crate sẽ đỏ; đó là đánh đổi đã biết.
+  #
+  # `TMPDIR=/var/tmp`: phép đo cần một tầng block thật để đếm, tmpfs không có gì.
+  # Không dùng `sudo`: `posix_fadvise` và `dd` đều không cần quyền root.
+  io:
+    name: Đo throttle trên đĩa thật
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Môi trường đo
+        run: |
+          echo "thiết bị chứa thư mục làm việc:"
+          df -h .
+          lsblk -o NAME,MAJ:MIN,SIZE,TYPE,MOUNTPOINT || true
+      - name: Build test
+        run: cargo test -p nasdedup-linux --test io_that --test busy_that --no-run
+      - name: Đo tốc độ đọc và kế toán byte (tiêu chí 1, 2)
+        run: |
+          set +e
+          out=$(NASDEDUP_IT_IO=1 TMPDIR=/var/tmp cargo test -p nasdedup-linux --test io_that                 -- --ignored --test-threads=1 --nocapture 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            echo "$out" | grep -E "^(test .* FAILED|assertion|thread)" | head -20               | while IFS= read -r line; do echo "::error::${line}"; done
+          fi
+          exit $code
+      - name: Đo phát hiện đĩa bận dưới tải thật (tiêu chí 3)
+        run: |
+          set +e
+          out=$(NASDEDUP_IT_DISK=1 cargo test -p nasdedup-linux --test busy_that                   -- --ignored --test-threads=1 --nocapture 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            echo "$out" | grep -E "^(test .* FAILED|assertion|thread)" | head -20               | while IFS= read -r line; do echo "::error::${line}"; done
+          fi
+          exit $code
+
   # Binary phát hành cho NAS là musl tĩnh (bản đặc tả NFR-4).
   # Không chạy trên pull request vì tốn nhiều phút; chỉ chạy khi đẩy lên main.
   musl:

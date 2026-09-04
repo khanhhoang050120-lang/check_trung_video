@@ -514,6 +514,7 @@ dependencies = [
  "nasdedup-db",
  "nasdedup-linux",
  "signal-hook",
+ "tempfile",
  "toml",
  "tracing",
  "tracing-subscriber",
