@@ -77,6 +77,42 @@ pub fn candidates(
     Ok(rows)
 }
 
+/// `ready_at` lớn nhất trong các row cùng `(domain, size)` đang `settling` (spec 5.4).
+///
+/// # Errors
+/// Lỗi SQLite.
+pub fn pending_same_size(
+    conn: &Connection,
+    me: &FileRecord,
+    scope: Scope,
+) -> Result<Option<i64>, DbError> {
+    let mut params: Vec<Box<dyn ToSql>> = vec![
+        Box::new(me.domain_id.as_bytes().to_vec()),
+        Box::new(row::u64_to_i64(me.size)),
+        Box::new(me.id),
+    ];
+    let scope_sql = match scope {
+        Scope::Owner => {
+            params.push(Box::new(me.owner_uid));
+            "AND owner_uid = ?4"
+        }
+        Scope::Share => {
+            params.push(Box::new(me.loc.root_id));
+            "AND root_id = ?4"
+        }
+        Scope::SameDomain => "",
+    };
+    // MAX bỏ qua NULL, đúng ý: row settling bị park không tự tiến được.
+    let sql = format!(
+        "SELECT MAX(ready_at) FROM files
+         WHERE domain_id = ?1 AND size = ?2 AND id <> ?3 AND state = 'settling' {scope_sql}"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let v: Option<i64> =
+        stmt.query_row(params_from_iter(params.iter().map(|b| b.as_ref())), |r| r.get(0))?;
+    Ok(v)
+}
+
 pub fn groups_by_key(
     conn: &Connection,
     domain: &DomainId,

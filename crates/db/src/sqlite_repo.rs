@@ -110,6 +110,10 @@ impl Repository for SqliteRepo {
         Ok(lookup::candidates(&self.conn, me, scope, settled_before_ns, limit)?)
     }
 
+    fn pending_same_size(&self, me: &FileRecord, scope: Scope) -> Result<Option<Ts>, RepoError> {
+        Ok(lookup::pending_same_size(&self.conn, me, scope)?)
+    }
+
     fn groups_by_key(
         &self,
         domain: &DomainId,

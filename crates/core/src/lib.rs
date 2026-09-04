@@ -23,12 +23,16 @@
 pub mod config;
 pub mod dedupe;
 pub mod events;
+pub mod filter;
 pub mod fs;
+pub mod hash;
 pub mod model;
+pub mod pipeline;
 pub mod recovery;
 pub mod repo;
 pub mod state;
 pub mod throttle;
+pub mod worker;
 
 pub use config::Config;
 pub use model::{

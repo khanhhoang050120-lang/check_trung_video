@@ -8,8 +8,31 @@ pub const DEFAULT_VIDEO_EXTENSIONS: &[&str] = &[
     "vob", "3gp", "r3d", "braw", "insv",
 ];
 
-/// Thư mục hệ thống loại trừ trên mọi NAS (spec 5.1).
-const COMMON: &[&str] = &[".snapshots", ".zfs", ".Trash-*", ".nasdedup", ".recycle"];
+/// Thư mục hệ thống loại trừ trên **mọi** NAS (spec 5.1).
+///
+/// Danh sách này cố ý gồm cả tên riêng của từng hãng (`@eaDir` của Synology,
+/// `@Recycle` của QNAP…), chứ không chỉ để trong preset của hãng đó. Lý do: mặc
+/// định `nas_flavor = "generic"`, và một người dùng Synology không đổi cấu hình
+/// sẽ quét cả `@eaDir` — nơi Synology sinh một thư mục thumbnail cho **mỗi** video.
+/// Không ai đặt video thật trong những thư mục này, nên loại trừ ở mọi nơi là an
+/// toàn, còn bỏ sót thì tốn hàng giờ quét vô ích.
+///
+/// Mục kết thúc bằng `*` là tiền tố (`.Trash-*` khớp `.Trash-1000`); xem
+/// `filter::prefilter`.
+const COMMON: &[&str] = &[
+    ".snapshots",
+    ".zfs",
+    ".Trash-*",
+    ".nasdedup",
+    ".recycle",
+    "@eaDir",
+    ".@__thumb",
+    "#recycle",
+    "@Recycle",
+    "#snapshot",
+    "@Recently-Snapshot",
+    "@tmp",
+];
 
 const SYNOLOGY: &[&str] = &["@eaDir", "#recycle", "#snapshot", "@tmp", "@sharebin"];
 const QNAP: &[&str] = &["@Recycle", ".@__thumb", "@Recently-Snapshot", ".@upload_cache"];
@@ -94,6 +117,29 @@ mod tests {
     #[test]
     fn generic_chi_co_phan_chung() {
         assert_eq!(NasFlavor::Generic.exclude_dirs(), COMMON.to_vec());
+    }
+
+    #[test]
+    fn mac_dinh_da_gom_du_danh_sach_cua_spec_5_1() {
+        // Người dùng Synology để nguyên `nas_flavor = "generic"` vẫn phải bỏ qua
+        // @eaDir, nếu không mỗi video sinh thêm một thư mục thumbnail bị quét.
+        let dirs = NasFlavor::Generic.exclude_dirs();
+        for d in [
+            "@eaDir",
+            ".@__thumb",
+            "#recycle",
+            "@Recycle",
+            "#snapshot",
+            "@Recently-Snapshot",
+            ".snapshots",
+            ".zfs",
+            ".Trash-*",
+            "@tmp",
+            ".recycle",
+            ".nasdedup",
+        ] {
+            assert!(dirs.contains(&d), "mặc định thiếu {d} (spec 5.1)");
+        }
     }
 
     #[test]

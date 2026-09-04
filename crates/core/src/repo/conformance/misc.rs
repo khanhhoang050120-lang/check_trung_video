@@ -367,3 +367,43 @@ pub fn patch_group_id_khong_ton_tai_bi_tu_choi(repo: &dyn Repository) {
     assert!(matches!(repo.apply(&t), Err(crate::repo::RepoError::Constraint(_))));
     assert_eq!(get(repo, &a.key).state, State::Settling, "không được ghi nửa chừng");
 }
+
+/// `pending_same_size`: chỉ đếm row `settling` cùng `(domain, size)`, bỏ row bị park.
+pub fn pending_same_size_bo_qua_row_bi_park(repo: &dyn Repository) {
+    let me = ident(1, 100, 5, 5);
+    let row = seed(repo, &me, &loc("a.mp4"));
+    let row = move_to(repo, &row, State::Sized, Patch::new().identity(me));
+
+    // Chưa có ai khác đang settling.
+    assert_eq!(repo.pending_same_size(&row, Scope::SameDomain).unwrap(), None);
+
+    // Một file cùng kích thước đang ổn định, hẹn muộn hơn.
+    repo.upsert_pending(&ident(2, 100, 9, 9), &loc("b.mp4"), NOW + 500, 0, NOW).unwrap();
+    // Một file khác kích thước: không liên quan.
+    repo.upsert_pending(&ident(3, 999, 9, 9), &loc("c.mp4"), NOW + 9000, 0, NOW).unwrap();
+    assert_eq!(
+        repo.pending_same_size(&row, Scope::SameDomain).unwrap(),
+        Some(NOW + 500),
+        "phải là ready_at lớn nhất của đúng nhóm cùng kích thước"
+    );
+
+    // Row settling bị park (ready_at NULL) không tự tiến được: chờ nó là chờ mãi.
+    let b = get(repo, &ident(2, 100, 9, 9).key);
+    move_to(repo, &b, State::Settling, Patch::new().ready_at(None));
+    assert_eq!(repo.pending_same_size(&row, Scope::SameDomain).unwrap(), None);
+}
+
+/// Scope thu hẹp phạm vi của `pending_same_size` giống như với `candidates`.
+pub fn pending_same_size_theo_scope(repo: &dyn Repository) {
+    let me = ident(1, 100, 5, 5);
+    let row =
+        move_to(repo, &seed(repo, &me, &loc("a.mp4")), State::Sized, Patch::new().identity(me));
+
+    let mut khac_uid = ident(2, 100, 9, 9);
+    khac_uid.uid = 1001;
+    repo.upsert_pending(&khac_uid, &rloc("b.mp4"), NOW + 500, 0, NOW).unwrap();
+
+    assert_eq!(repo.pending_same_size(&row, Scope::SameDomain).unwrap(), Some(NOW + 500));
+    assert_eq!(repo.pending_same_size(&row, Scope::Owner).unwrap(), None, "khác uid");
+    assert_eq!(repo.pending_same_size(&row, Scope::Share).unwrap(), None, "khác root");
+}

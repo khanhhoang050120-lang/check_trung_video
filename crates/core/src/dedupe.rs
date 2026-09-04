@@ -87,6 +87,17 @@ pub trait Deduper {
 
     /// `verify.rs` mở dst bằng `open_rw()` khi true (spec 5.7 bước 0 chung).
     fn dest_needs_write(&self) -> bool;
+
+    /// Bản cài đặt này có **thật sự** chia sẻ extent không.
+    ///
+    /// Quyết định trạng thái cuối của một cặp giống nhau: `deduped` (đã gộp dung
+    /// lượng) hay `verified` (mới chỉ xác minh giống nhau — chế độ report, và mọi
+    /// cặp có một phía nằm trên root remote, spec 1.5). Hai trạng thái này không
+    /// được lẫn: báo cáo nói "đã tiết kiệm 4 TB" trong khi chưa gộp gì là sai sự
+    /// thật với người dùng.
+    fn shares_extents(&self) -> bool {
+        true
+    }
 }
 
 /// So byte thật nhưng **không** thay đổi filesystem (spec 5.7.1, chế độ report).
@@ -124,6 +135,10 @@ impl Deduper for DryRunDeduper {
     }
 
     fn dest_needs_write(&self) -> bool {
+        false
+    }
+
+    fn shares_extents(&self) -> bool {
         false
     }
 }
@@ -182,6 +197,10 @@ impl Deduper for NoopDeduper {
     }
 
     fn dest_needs_write(&self) -> bool {
+        false
+    }
+
+    fn shares_extents(&self) -> bool {
         false
     }
 }

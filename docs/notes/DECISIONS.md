@@ -4,6 +4,60 @@ Mỗi mục: quyết định gì, vì sao, đã loại phương án nào. Không
 
 ---
 
+## DEC-018 — `Deduper::shares_extents()` thay vì đoán qua `name()`
+
+**Ngày:** 2026-09-04 · **Phase:** 2
+
+Trait `Deduper` có thêm `fn shares_extents(&self) -> bool` (mặc định `true`);
+`DryRunDeduper` và `NoopDeduper` trả `false`. `verify.rs` dùng nó để chọn trạng thái
+cuối: `deduped` (đã gộp dung lượng thật) hay `verified` (mới xác minh giống nhau).
+
+**Vì sao.** Bản đầu viết `if ctx.deduper.name() != "dry_run" { Deduped } else { Verified }`.
+Ba vấn đề: so chuỗi thì trình biên dịch không giúp được gì khi thêm backend mới; `name()`
+tồn tại để ghi vào cột `dedup_events.method` chứ không phải để phân loại hành vi; và
+`NoopDeduper` cũng trả `"dry_run"` nên hai thứ khác hẳn nhau lại không phân biệt được.
+
+**Vì sao quan trọng.** `deduped` và `verified` không được lẫn nhau. Báo cáo nói "đã
+tiết kiệm 4 TB" trong khi thực ra chưa gộp gì là nói dối người dùng — và đó chính là
+tình huống của chế độ report và của mọi cặp có một phía nằm trên root remote (mục 1.5).
+
+---
+
+## DEC-017 — Bước hash ghi hash rồi dừng, không xếp nhóm luôn
+
+**Ngày:** 2026-09-04 · **Phase:** 2
+
+`sized::tinh_hash` đọc file, ghi `sparse_hash` vào DB, rồi kết thúc lượt. Việc xếp
+nhóm để lượt sau làm (lúc đó `rec.sparse_hash` đã có nên không tốn I/O).
+
+**Vì sao.** Đọc 16 MiB là phần đắt nhất của cả pipeline. Nếu gộp cả hai việc vào một
+lượt thì một lần `SIGTERM` giữa chừng vứt bỏ toàn bộ công sức đọc, và lần khởi động
+sau phải đọc lại từ đầu. Chia đôi thì phần đắt được lưu ngay khi có.
+
+**Đánh đổi.** Mỗi file cần thêm một vòng `next_ready`. Không đáng kể: một vòng là một
+truy vấn index, còn phần thắng là 16 MiB I/O không phải làm lại.
+
+---
+
+## DEC-016 — Thêm `pending_same_size` vào trait `Repository`
+
+**Ngày:** 2026-09-04 · **Phase:** 2
+
+Spec 5.4 bước 3 nói: "nếu tồn tại row cùng `(domain_id, size)` đang `settling` → Defer".
+`candidates` chỉ trả row `sized`/`distinct` nên không trả lời được câu hỏi đó, và trait
+được thêm một hàm hẹp: `pending_same_size(me, scope) -> Option<Ts>`.
+
+**Vì sao không dùng cách khác.** Nới `candidates` để trả cả row `settling` sẽ làm mọi
+nơi gọi nó phải tự lọc lại, và dễ quên. Một hàm riêng, trả đúng một con số, thì không
+ai dùng nhầm được.
+
+**Chi tiết dễ bỏ sót.** Row `settling` mà `ready_at IS NULL` (bị park) thì **không**
+tính: nó không tự tiến được, nên chờ nó là chờ mãi. `MAX(ready_at)` của SQL bỏ qua NULL
+nên bản SQLite đúng sẵn; bản bộ nhớ phải `filter_map(|r| r.ready_at)` cho khớp.
+
+---
+
+
 ## DEC-015 — Lệnh quản trị `db` không nằm trong trait `Repository`
 
 **Ngày:** 2026-09-04 · **Phase:** 1

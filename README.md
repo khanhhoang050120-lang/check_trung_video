@@ -29,14 +29,14 @@ Không thể chia sẻ extent qua mạng, nên nhóm trùng lặp chéo hai máy
 
 ## Trạng thái
 
-Phase 0 (khung dự án) và Phase 1 (tầng dữ liệu) đã xong. Các phase tiếp theo theo mục 11 của bản đặc tả:
+Phase 0 (khung dự án), Phase 1 (tầng dữ liệu) và Phase 2 (bộ lọc, hash, pipeline) đã xong. Các phase tiếp theo theo mục 11 của bản đặc tả:
 
 | Phase | Nội dung | Trạng thái |
 | :--- | :--- | :--- |
 | 0 | Workspace, kiểu dữ liệu, cấu hình, trait, CLI | Xong |
 | 1 | SQLite, state machine, hàng đợi | Xong |
-| 2 | Bộ lọc, sparse hash, pipeline dry-run | Tiếp theo |
-| 3 | Linux I/O, throttle, chạy report-only | Chưa |
+| 2 | Bộ lọc, sparse hash, pipeline dry-run | Xong |
+| 3 | Linux I/O, throttle, chạy report-only | Tiếp theo |
 | 4 | Watcher và reconcile | Chưa |
 | 5 | Verify và action thật | Chưa |
 | 6 | Hardening, đóng gói, quan sát | Chưa |

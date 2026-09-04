@@ -52,7 +52,19 @@ fn dispatch(cli: &Cli) -> Result<()> {
             let cfg = load_config(&cli.config)?;
             platform::undo(&cfg, path)
         }
-        Command::Check { a, b } => cmd_check(a, b),
+        Command::Check { a, b } => {
+            // Không cần DB: `check` chỉ đọc hai file và giải thích. Cấu hình chỉ để
+            // biết ngưỡng và danh sách loại trừ; thiếu nó thì dùng mặc định, nhưng
+            // phải nói ra — im lặng dùng mặc định sẽ khiến kết quả khó hiểu.
+            let cfg = match load_config(&cli.config) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("cảnh báo: dùng cấu hình mặc định vì {e:#}");
+                    Config::default()
+                }
+            };
+            cmd::check::run(&cfg, a, b)
+        }
         Command::Db { action } => {
             let cfg = load_config(&cli.config)?;
             cmd::db::run(&cfg, action)
@@ -97,15 +109,6 @@ fn cmd_config(path: &Path, check_only: bool) -> Result<()> {
     let rendered = toml::to_string_pretty(&cfg).context("không serialize được cấu hình")?;
     println!("{rendered}");
     Ok(())
-}
-
-fn cmd_check(a: &Path, b: &Path) -> Result<()> {
-    // Phase 2 sẽ chạy đủ filter và so byte; Phase 0 chỉ kiểm tra hai file tồn tại.
-    for p in [a, b] {
-        let md = std::fs::metadata(p).with_context(|| format!("không đọc được {}", p.display()))?;
-        anyhow::ensure!(md.is_file(), "{} không phải file thường", p.display());
-    }
-    anyhow::bail!("check chưa được cài đặt đầy đủ: xem mục 11, Phase 2 của bản đặc tả")
 }
 
 /// Thời điểm hiện tại theo millisecond epoch (`Ts` của core).

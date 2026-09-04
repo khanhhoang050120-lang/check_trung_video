@@ -2,4 +2,5 @@
 //!
 //! `main.rs` chỉ điều phối; logic nằm ở đây để thêm lệnh không làm phình một file.
 
+pub mod check;
 pub mod db;

@@ -113,6 +113,16 @@ pub trait Repository {
         limit: usize,
     ) -> Result<Vec<FileRecord>, RepoError>;
 
+    /// Còn row nào cùng `(domain_id, size)` đang `settling` không (spec 5.4 bước 3).
+    ///
+    /// Trả `ready_at` **lớn nhất** trong số đó, hoặc `None` nếu không có row nào.
+    ///
+    /// Dùng để hoãn: nếu một file cùng kích thước còn đang ổn định, nó có thể chính
+    /// là bản trùng. Kết luận `distinct` ngay bây giờ rồi lát nữa lại phải hủy đi là
+    /// vừa tốn công vừa làm báo cáo nhấp nháy. Row `settling` không có `ready_at`
+    /// (bị park) thì bỏ qua: nó không tự tiến được nên chờ nó là chờ mãi.
+    fn pending_same_size(&self, me: &FileRecord, scope: Scope) -> Result<Option<Ts>, RepoError>;
+
     /// Group cùng khóa, `ORDER BY id` (spec 5.4).
     fn groups_by_key(
         &self,

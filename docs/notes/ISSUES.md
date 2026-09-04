@@ -4,6 +4,29 @@ Những chỗ cố ý để lại chưa hoàn chỉnh. Khi xử lý xong thì ch
 
 ---
 
+## ISSUE-008 — Phần chưa làm của Phase 2
+
+**Từ:** Phase 2 · **Nơi:** `crates/core/src/`
+
+Đã xong: pre-filter (5.1), magic (5.3), sparse hash (5.3) kèm property test, pipeline
+`settling → sized → hashed → …` (5.2, 5.4, 5.7 bước 0), bảng errno (5.7.4), worker
+(`next_ready → step → apply`), và `nasdedup check <A> <B>`.
+
+Chưa làm, cố ý để lại:
+
+- **`core::probe`** (Phase 2 bước 8, đánh dấu "tùy chọn"): parser `mvhd`/EBML đọc giới
+  hạn để làm giàu báo cáo. Không nằm trên đường chính; `Prober` vẫn là trait rỗng.
+- **`tests/fixtures/gen.rs`** (bước 6): generator file giả và vài video mẫu thật nhỏ.
+  Fixture false-positive — thứ thật sự cần cho Phase 5 — đã có, dựng ngay trong test
+  `hash_trung_nhung_noi_dung_khac_thi_khong_bao_gio_dedup` từ chính công thức của
+  `cac_doan`, nên nó không thể lệch khi công thức đổi. Video mẫu thật cần cho test tích
+  hợp Linux ở Phase 3 trở đi.
+- **`handler.rs`** (`FsEvent → Repository`, bảng 5.9): thuộc Phase 4 (watcher).
+- Bước verify hiện luôn dùng `NoJournal`. `RepoJournal` chỉ cần cho `VerifiedClone`,
+  tức là Phase 5; `KernelDedupe` không dùng journal (spec 5.7.2).
+
+---
+
 ## ISSUE-007 — Phase 1 đã xong (đóng)
 
 **Từ:** Phase 1 · **Nơi:** `crates/db/`, `crates/core/src/repo/` · **Đóng ngày:** 2026-09-04

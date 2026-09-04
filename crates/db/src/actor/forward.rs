@@ -74,6 +74,11 @@ impl Repository for DbHandle {
         forward!(self, |r| r.candidates(&me, scope, settled_before_ns, limit))
     }
 
+    fn pending_same_size(&self, me: &FileRecord, scope: Scope) -> Result<Option<Ts>, RepoError> {
+        let me = me.clone();
+        forward!(self, |r| r.pending_same_size(&me, scope))
+    }
+
     fn groups_by_key(
         &self,
         domain: &DomainId,

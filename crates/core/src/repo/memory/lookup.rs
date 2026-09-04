@@ -32,6 +32,23 @@ pub fn candidates(
     out.into_iter().take(limit).cloned().collect()
 }
 
+/// `ready_at` lớn nhất trong các row cùng `(domain, size)` đang `settling` (spec 5.4).
+pub fn pending_same_size(s: &Store, me: &FileRecord, scope: Scope) -> Option<crate::model::Ts> {
+    s.files
+        .values()
+        .filter(|r| r.id != me.id)
+        .filter(|r| r.state == crate::model::State::Settling)
+        .filter(|r| r.domain_id == me.domain_id && r.size == me.size)
+        .filter(|r| match scope {
+            Scope::Owner => r.owner_uid == me.owner_uid,
+            Scope::Share => r.loc.root_id == me.loc.root_id,
+            Scope::SameDomain => true,
+        })
+        // Row settling bị park (`ready_at` NULL) không tự tiến được: chờ nó là chờ mãi.
+        .filter_map(|r| r.ready_at)
+        .max()
+}
+
 /// Group cùng khóa, `ORDER BY id` — nhiều group cùng khóa khi sparse hash báo trùng nhầm.
 pub fn groups_by_key(
     s: &Store,

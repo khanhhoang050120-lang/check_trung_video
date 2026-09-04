@@ -3,6 +3,23 @@
 Chỗ bản đặc tả mơ hồ, sai, hoặc lệch với code. Sửa được thì sửa thẳng vào spec rồi ghi lại ở đây.
 
 ---
+## SPEC-006 — Phase 2 thêm một hàm vào `Repository` và một hàm vào `Deduper`
+
+**Trạng thái:** đã hiện thực hóa, **spec cần cập nhật mục 3.3**
+
+| Thêm gì | Vì sao |
+| :--- | :--- |
+| `Repository::pending_same_size(me, scope) -> Option<Ts>` | Spec 5.4 bước 3 yêu cầu Defer khi còn row cùng `(domain, size)` đang `settling`, nhưng mục 3.3 không có hàm nào trả lời được câu hỏi đó (`candidates` chỉ trả `sized`/`distinct`). Xem DEC-016. |
+| `Deduper::shares_extents() -> bool` | Phân biệt `deduped` với `verified` mà không phải so chuỗi `name()`. Xem DEC-018. |
+
+Ngoài ra `StepOutcome::Apply` mang `Box<Transition>` chứ không phải `Transition` trực
+tiếp: `Transition` nặng (có `Vec<others>`, `Patch`, `DedupEvent`) và clippy chặn biến
+thể enum quá chênh lệch kích thước.
+
+**Cần làm:** cập nhật mục 3.3 của bản đặc tả cho khớp.
+
+---
+
 
 ## SPEC-005 — Trait `Repository` thực tế lệch mục 3.3 ở sáu chỗ
 

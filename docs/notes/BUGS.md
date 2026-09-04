@@ -4,6 +4,73 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-013 — Vòng lặp chỉ chạy một lần, và cặp file sẽ quay vòng vô hạn
+
+**Ngày:** 2026-09-04 · **Phase:** 2 · **Nơi:** `crates/core/src/pipeline/`
+
+**Triệu chứng.** Clippy báo `this loop never actually loops` ở `group::xep_cho`. Test
+end-to-end của kịch bản `Differs` vẫn **xanh**.
+
+**Nguyên nhân gốc.** Hai lỗi che nhau.
+
+1. `for g in groups { … }` mà mọi nhánh đều `return`: chỉ nhóm đầu tiên được xét.
+2. Khi verify báo `Differs`, `khac_nhau` đưa B về `sized` với `group_id = NULL`. Lượt
+   sau `xep_cho` chạy lại, thấy **đúng nhóm vừa bị bác bỏ** ở đầu danh sách, và cho B
+   vào lại. Hai file khác nội dung sẽ so byte với nhau (2×size I/O) lặp vô hạn.
+
+Spec 5.7.4 nói rõ: "B `Join` group kế tiếp cùng khóa có `id` **lớn hơn**… Vì chỉ thử
+group có `id` lớn hơn nên một cặp không bao giờ verify lại với nhau". Bản cài đặt đã
+đánh mất vế "lớn hơn" khi quên rằng sau `Leave` thì không còn gì nhớ nhóm nào vừa hỏng.
+
+**Vì sao test không bắt được.** `chay_den_khi_dung` dừng ở điểm bất động hoặc sau `n`
+bước. Vòng lặp vô hạn chỉ làm nó chạy hết `n` bước rồi trả về một trạng thái nửa vời,
+và assertion `assert_ne!(a.group_id, bb.group_id)` tình cờ đúng vì lúc đó `group_id`
+của B đang là `NULL`. Test xanh vì lý do sai.
+
+**Cách sửa.** Chọn nhóm kế tiếp **ngay trong** bước verify, nơi duy nhất biết nhóm nào
+vừa bị bác bỏ: `groups_by_key(...).find(|g| g.id > group_id)`; hết nhóm thì B mở nhóm
+mới với chính nó làm canonical. `xep_cho` đổi thành `if let Some(g) = …next()` để nói
+rõ rằng chỉ nhóm đầu tiên được xét, và vì sao.
+
+Thêm test `sau_differs_khong_thu_lai_dung_nhom_cu` khẳng định `nhom_b > nhom_a` và
+chạy thêm 20 lượt nữa để chắc chắn B không quay lại.
+
+**Bài học.** Một assertion `assert_ne!` trên trạng thái *trung gian* có thể đúng vì lý
+do hoàn toàn khác điều ta định kiểm. Kịch bản nào có nguy cơ lặp vô hạn thì phải
+khẳng định **điểm dừng** (state cuối cùng và bất biến chống lặp), không chỉ khẳng định
+"hai thứ này khác nhau". Và: clippy bắt được lỗi logic thật, không chỉ lỗi phong cách —
+`never_loop` ở đây là dấu hiệu của một bất biến bị đánh mất.
+
+---
+
+## BUG-012 — `.Trash-*` không khớp thư mục rác nào, và preset mặc định thiếu tên hãng
+
+**Ngày:** 2026-09-04 · **Phase:** 2 · **Nơi:** `crates/core/src/config/presets.rs`
+
+**Triệu chứng.** Viết test đầu tiên cho pre-filter thì `@eaDir` không bị loại với cấu
+hình mặc định.
+
+**Nguyên nhân gốc — hai lỗi.**
+
+1. `nas_flavor` mặc định là `generic`, và preset của `generic` chỉ có phần `COMMON`,
+   vốn thiếu `@eaDir`, `#recycle`, `@Recycle`, `.@__thumb`, `#snapshot`,
+   `@Recently-Snapshot`, `@tmp`. Spec 5.1 liệt kê tất cả những tên đó là **mặc định**.
+   Hệ quả: một người dùng Synology không đổi cấu hình sẽ quét cả `@eaDir` — nơi
+   Synology sinh một thư mục thumbnail cho **mỗi** video trong thư viện.
+2. `.Trash-*` được so bằng `HashSet::contains`, tức là so chuỗi y hệt. Thư mục thật
+   trên Linux tên là `.Trash-1000` (kèm uid), nên mẫu này **chưa bao giờ** khớp gì.
+
+**Cách sửa.** Đưa đủ danh sách của spec 5.1 vào `COMMON`; tách mục kết thúc bằng `*`
+thành danh sách tiền tố riêng trong `Prefilter`. Thêm test cho `.Trash-0`, `.Trash-1000`
+và một test khẳng định `Trash-cua-toi` **không** bị bắt nhầm.
+
+**Bài học.** Một danh sách chuỗi trong cấu hình mà có phần tử chứa ký tự đại diện thì
+nơi **dùng** nó phải biết điều đó. Kiểu dữ liệu `Vec<String>` không nói được "một số
+phần tử là mẫu"; ở đây tài liệu và test phải gánh vai trò đó.
+
+---
+
+
 ## BUG-011 — Chín chỗ lệch nữa giữa hai bản `Repository`, tìm bằng rà soát nhiều tác nhân
 
 **Ngày:** 2026-09-04 · **Phase:** 1 · **Nơi:** `crates/core/src/repo/memory/`, `crates/db/src/`

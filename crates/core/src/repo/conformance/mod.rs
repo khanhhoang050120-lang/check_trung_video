@@ -152,6 +152,8 @@ macro_rules! repository_conformance_tests {
             presence_scan_danh_missing_va_gone,
             presence_khong_dung_row_moi_cap_nhat,
             candidates_loc_va_sap_xep,
+            pending_same_size_bo_qua_row_bi_park,
+            pending_same_size_theo_scope,
             groups_by_key_theo_id,
             journal_vong_doi,
             roots_volumes_upsert,
