@@ -44,7 +44,14 @@ Hai test dễ chập chờn nhất khi chạy thật, cần đọc kỹ lần đ
 
 ---
 
-## ISSUE-011 — `presence_lon.rs` có test nhưng **không có runner**, nên tiêu chí "100k < 10 phút" chưa được đo lần nào
+## ISSUE-011 — (ĐÃ ĐÓNG 2026-09-04) `presence_lon.rs` có test nhưng không có runner
+
+**Đã xử lý:** thêm nhóm việc CI `presence` ("Presence scan 100k file") gọi
+`NASDEDUP_TEST_BIG=1 ... --test presence_lon -- --ignored`, kèm dòng
+`grep -qE "test result: ok\. [1-9][0-9]* passed"` chống xanh giả như ba bước
+`--ignored` sẵn có. Giữ nguyên phần mô tả bên dưới làm hồ sơ.
+
+### Mô tả gốc
 
 **Từ:** Phase 4 Gói D · **Nơi:** `crates/linux/tests/presence_lon.rs`, `.github/workflows/ci.yml`
 

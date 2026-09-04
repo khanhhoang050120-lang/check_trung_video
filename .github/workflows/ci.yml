@@ -166,6 +166,38 @@ jobs:
           fi
           exit 0
 
+  # Tiêu chí hoàn thành Phase 4: "presence scan trên root 100k file < 10 phút và
+  # không đánh `missing` sai". Tách thành nhóm việc riêng vì nó dựng 100 000 file
+  # và chạy vài phút — nhét vào nhóm `linux` sẽ làm mọi lần đẩy code chậm theo.
+  #
+  # Trước khi có bước này, `presence_lon.rs` tồn tại mà **không ai gọi**: `--workspace`
+  # bỏ qua `#[ignore]`, nên tiêu chí ấy sẽ được tích xanh dựa trên sự tồn tại của một
+  # file test không bao giờ chạy — đúng khuôn BUG-019 (ISSUE-011).
+  presence:
+    name: Presence scan 100k file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build test
+        run: cargo test -p nasdedup-linux --test presence_lon --no-run
+      - name: Chạy presence 100k
+        run: |
+          set +e
+          out=$(NASDEDUP_TEST_BIG=1 TMPDIR=/var/tmp cargo test -p nasdedup-linux --test presence_lon -- --ignored --test-threads=1 --nocapture 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            echo "$out" | grep -A1 -E "^(test .* FAILED|thread .* panicked|assertion)" | head -30               | while IFS= read -r line; do echo "::error::${line}"; done
+            exit $code
+          fi
+          if ! echo "$out" | grep -qE "test result: ok\. [1-9][0-9]* passed"; then
+            echo "::error::bước đo không chạy test nào — xanh giả"
+            exit 1
+          fi
+          exit 0
+
   # Binary phát hành cho NAS là musl tĩnh (bản đặc tả NFR-4).
   # Không chạy trên pull request vì tốn nhiều phút; chỉ chạy khi đẩy lên main.
   musl:

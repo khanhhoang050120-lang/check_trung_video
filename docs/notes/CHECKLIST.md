@@ -140,7 +140,7 @@ bao giờ chạy** — và tiêu chí dựa vào nó được tích xanh dựa t
 
 | Tiêu chí | Test | Runner CI | Trạng thái |
 | --- | --- | --- | --- |
-| presence 100k file < 10 phút | `tests/presence_lon.rs` | **không có** | ⚠️ có test, chưa đo lần nào — ISSUE-011 |
+| presence 100k file < 10 phút | `tests/presence_lon.rs` | có (`NASDEDUP_TEST_BIG`) | ✅ — nhóm việc `presence`, thêm 2026-09-04 |
 | btrfs reflink thật | `tests/btrfs_that.rs` | có (`NASDEDUP_IT_MOUNT`) | ✅ |
 | tốc độ đọc ≤ 1,1 × `read_rate` | `tests/io_that.rs` | có (`NASDEDUP_IT_IO`) | ✅ |
 | phanh đĩa bận trên phần cứng thật | `tests/busy_that.rs` | có (`NASDEDUP_IT_DISK`) | ✅ |
