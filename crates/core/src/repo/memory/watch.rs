@@ -1,7 +1,5 @@
 //! Cập nhật từ watcher và reconcile/presence scan (spec 5.9, 5.10).
 
-use std::collections::HashSet;
-
 use crate::model::{FileKey, FileLoc, FileRecord, Fingerprint, Identity, State, Ts};
 use crate::repo::rules::{apply_upsert, decide_upsert};
 use crate::repo::RepoError;
@@ -104,7 +102,8 @@ pub fn mark_missing_prefix(s: &mut Store, dir: &FileLoc, now: Ts) -> u64 {
 /// `missing` → `prev_state` (fingerprint khớp) hoặc `settling` (spec 4.4).
 ///
 /// Dùng đúng quy tắc upsert với `loc` giữ nguyên, để không có nhánh riêng lệch
-/// với `upsert_pending`.
+/// với `upsert_pending` — kể cả bước bỏ con trỏ canonical, thứ bản SQLite được
+/// `upsert_in_tx` làm hộ.
 pub fn restore_or_reset(
     s: &mut Store,
     key: &FileKey,
@@ -115,28 +114,57 @@ pub fn restore_or_reset(
         return Ok(());
     };
     let kind = s.root_kind(root_id)?;
-    if let Some(r) = s.file_by_key_mut(key) {
-        if r.state == State::Missing {
-            let d = decide_upsert(r, id, kind, now, r.priority);
-            apply_upsert(r, d, id, None, now);
-        }
+    let doi = s.file_by_key_mut(key).filter(|r| r.state == State::Missing).map(|r| {
+        let d = decide_upsert(r, id, kind, now, r.priority);
+        let truoc = r.group_id;
+        apply_upsert(r, d, id, None, now);
+        (r.id, truoc, r.group_id)
+    });
+    if let Some((row_id, truoc, sau)) = doi {
+        s.bo_goc_khi_roi_nhom(row_id, truoc, sau);
     }
     Ok(())
 }
 
+/// Ghi nhận cả lô file đã thấy, **một** transaction (spec 5.10).
+///
+/// Bản SQLite chạy cả lô trong một transaction, nên một entry hỏng (root chưa
+/// đăng ký) làm rollback sạch. Ở đây phải tự hoàn tác: chụp lại ba phần bị sửa
+/// rồi trả về nguyên trạng khi có lỗi. Bỏ qua bước này thì tập `seen` giữ lại
+/// những entry đã kịp ghi, và `presence_finish` ngay sau đó coi những file ấy là
+/// "đã thấy" — một file thật sự biến mất sẽ **không** bị đánh `missing`.
 pub fn presence_seen(
     s: &mut Store,
     seen: &[(FileKey, Fingerprint, FileLoc)],
     now: Ts,
 ) -> Result<u64, RepoError> {
-    if s.seen.is_none() {
-        return Err(RepoError::Other("presence_seen trước presence_begin".to_owned()));
+    let Some(phien) = &s.phien else {
+        return Err(RepoError::Constraint("presence_seen trước presence_begin".to_owned()));
+    };
+    let anh_chup = (s.files.clone(), s.groups.clone(), phien.seen.clone());
+    match presence_seen_in_tx(s, seen, now) {
+        Ok(n) => Ok(n),
+        Err(e) => {
+            let (files, groups, seen) = anh_chup;
+            s.files = files;
+            s.groups = groups;
+            if let Some(p) = s.phien.as_mut() {
+                p.seen = seen;
+            }
+            Err(e)
+        }
     }
+}
 
+fn presence_seen_in_tx(
+    s: &mut Store,
+    seen: &[(FileKey, Fingerprint, FileLoc)],
+    now: Ts,
+) -> Result<u64, RepoError> {
     let mut restored = 0;
     for (key, fp, loc) in seen {
-        if let Some(set) = s.seen.as_mut() {
-            set.insert(*key);
+        if let Some(p) = s.phien.as_mut() {
+            p.seen.insert(*key);
         }
         // Tra `root_kind` **trong** nhánh khôi phục, không phải cho mọi entry: bản
         // SQLite chỉ chạm bảng `roots` khi thật sự cần so fingerprint, nên một entry
@@ -162,40 +190,54 @@ pub fn presence_seen(
                 dev: 0,
             };
             let d = decide_upsert(r, &incoming, kind, now, r.priority);
+            let truoc = r.group_id;
             apply_upsert(r, d, &incoming, Some(loc), now);
+            let (row_id, sau) = (r.id, r.group_id);
+            s.bo_goc_khi_roi_nhom(row_id, truoc, sau);
             restored += 1;
         }
     }
     Ok(restored)
 }
 
-pub fn presence_finish(
-    s: &mut Store,
-    root_id: i64,
-    scan_id: Ts,
-    retention_ms: i64,
-) -> Result<(u64, u64), RepoError> {
-    let seen: HashSet<FileKey> = s
-        .seen
-        .take()
-        .ok_or_else(|| RepoError::Other("presence_finish trước presence_begin".to_owned()))?;
+/// Đóng phiên: row không thấy → `missing`. Xem `Repository::presence_finish`.
+pub fn presence_finish(s: &mut Store, root_id: i64, scan_id: Ts) -> Result<u64, RepoError> {
+    // Kiểm root **trước** khi `take`: `finish` nhầm root mà vẫn nuốt tập `seen` thì
+    // lượt quét đang chạy mất trắng và lỗi chỉ lộ ra ở lần `finish` đúng root sau đó.
+    match &s.phien {
+        None => {
+            return Err(RepoError::Constraint("presence_finish trước presence_begin".to_owned()))
+        }
+        Some(p) if p.root_id != root_id => {
+            return Err(RepoError::Constraint(format!(
+                "presence_finish(root {root_id}) nhưng phiên đang mở cho root {}",
+                p.root_id
+            )))
+        }
+        Some(_) => {}
+    }
+    let seen = s.phien.take().map(|p| p.seen).unwrap_or_default();
 
-    let (mut to_missing, mut to_gone) = (0, 0);
+    let mut to_missing = 0;
     for r in s.files.values_mut().filter(|r| r.loc.root_id == root_id && !seen.contains(&r.key)) {
-        match r.state {
-            State::Missing if r.updated_at < scan_id.saturating_sub(retention_ms) => {
-                r.state = State::Gone;
-                r.updated_at = scan_id;
-                to_gone += 1;
-            }
-            State::Missing | State::Gone => {}
-            // Row tạo hoặc cập nhật trong lúc walk không bị đụng (bản chốt mục 6).
-            _ if r.updated_at < scan_id => {
-                set_missing(r, scan_id);
-                to_missing += 1;
-            }
-            _ => {}
+        // Row tạo hoặc cập nhật trong lúc walk không bị đụng (bản chốt mục 6).
+        if !matches!(r.state, State::Missing | State::Gone) && r.updated_at < scan_id {
+            set_missing(r, scan_id);
+            to_missing += 1;
         }
     }
-    Ok((to_missing, to_gone))
+    Ok(to_missing)
+}
+
+/// `missing` cũ hơn `cutoff` → `gone`. Xem `Repository::presence_expire`.
+pub fn presence_expire(s: &mut Store, root_id: i64, cutoff: Ts, now: Ts) -> u64 {
+    let mut n = 0;
+    for r in s.files.values_mut() {
+        if r.loc.root_id == root_id && r.state == State::Missing && r.updated_at < cutoff {
+            r.state = State::Gone;
+            r.updated_at = now;
+            n += 1;
+        }
+    }
+    n
 }

@@ -62,6 +62,11 @@ pub fn root_upsert(s: &mut Store, r: &Root, now: Ts) -> i64 {
     id
 }
 
+/// Số row còn sống của một root (mọi state trừ `gone`) — xem `Repository::file_count`.
+pub fn file_count(s: &Store, root_id: i64) -> u64 {
+    s.files.values().filter(|r| r.loc.root_id == root_id && r.state != State::Gone).count() as u64
+}
+
 pub fn park_domain(s: &mut Store, domain: &DomainId, err: &str, now: Ts) -> u64 {
     let mut n = 0;
     for r in s.files.values_mut() {

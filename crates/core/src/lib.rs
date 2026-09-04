@@ -26,6 +26,7 @@ pub mod dedupe;
 pub mod events;
 pub mod filter;
 pub mod fs;
+pub mod handler;
 pub mod hash;
 pub mod model;
 pub mod pipeline;
@@ -34,7 +35,9 @@ pub mod repo;
 pub mod scan;
 pub mod scheduler;
 pub mod state;
+pub mod sysctl;
 pub mod throttle;
+pub mod walk;
 pub mod window;
 pub mod worker;
 

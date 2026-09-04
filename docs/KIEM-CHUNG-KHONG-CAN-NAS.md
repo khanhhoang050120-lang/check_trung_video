@@ -8,20 +8,25 @@ Tiêu chí hoàn thành của Phase 3 (bản đặc tả mục 11) gồm sáu đ
 | 1 | `rkB/s` trung bình ≤ 1,1 × `read_rate` | Một máy Linux có đĩa | ✅ CI |
 | 2 | `read_bytes` khớp `iostat` ±5 % | Một máy Linux có đĩa | ✅ CI |
 | 3 | `should_pause` bật khi chạy `dd`, nhả sau đó | Một máy Linux có đĩa | ✅ CI |
-| 4 | Khởi động lại giữa scan → cursor tiếp đúng chỗ | **Không cần gì** | ✅ CI |
+| 4 | Khởi động lại giữa scan → cursor tiếp đúng chỗ | **Không cần gì** | ⚠️ một nửa |
 | 5 | Root chứa subvolume Btrfs con được quét | Btrfs (dựng bằng file loop) | ✅ CI |
 | 6 | `status` phản ánh đúng hàng đợi | **Không cần gì** | ✅ CI |
 | 7 | Chạy ≥ 3 ngày với **dữ liệu thật ở quy mô thật** | **Bắt buộc NAS** | ⬜ |
 
-Tiêu chí 4 và 6 không cần máy đặc biệt nào: chúng chạy mỗi lần `cargo test`, kể cả
-trên máy Windows của người phát triển.
+Tiêu chí 6 không cần máy đặc biệt nào: nó chạy mỗi lần `cargo test`, kể cả trên máy
+Windows của người phát triển.
+
+**Tiêu chí 4 trước đây bị đánh ✅ nhầm.** Nó có hai mảnh, và chỉ một mảnh được kiểm:
+`end_to_end.rs` chứng minh `pha_a` **dùng** con trỏ đúng — kể cả trường hợp `a/` so với
+`a-b` — nhưng daemon **chưa bao giờ ghi** con trỏ xuống DB (BUG-019). Khởi động lại
+giữa chừng vẫn quét lại cả root từ đầu. Phần vá nằm trong Gói B của Phase 4.
 
 Tiêu chí 5 do `crates/linux/tests/btrfs_that.rs` đảm nhiệm: CI dựng một Btrfs 512 MiB
 bằng file loop, tạo subvolume lồng nhau, rồi kiểm. **Nhóm việc này bắt được BUG-018
 ngay lần chạy đầu tiên** — lỗi nặng nhất từ đầu dự án, mà 400+ test giả lập không
 thấy. Đó là bằng chứng cụ thể cho lập luận ở mục A bên dưới.
 
-**Sáu trên bảy đã xong, và không cần xin quyền gì.** Chỉ **tiêu chí 7** thật sự bắt buộc
+**Năm trên bảy đã xong trọn vẹn, và không cần xin quyền gì.** Chỉ **tiêu chí 7** thật sự bắt buộc
 phải có NAS — và nó thuộc về lúc triển khai chính thức, không phải lúc phát triển.
 
 Ba nhóm việc CI đảm nhiệm:

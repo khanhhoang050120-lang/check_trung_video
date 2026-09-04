@@ -113,6 +113,22 @@ pub fn pending_same_size(
     Ok(v)
 }
 
+/// Số row còn sống của một root (mọi state trừ `gone`) — xem `Repository::file_count`.
+///
+/// Đây là **mẫu số** của guard chống mất dữ liệu ở presence scan, nên nó phải đọc
+/// **bảng thật** chứ không dựa vào một bộ đếm nào khác: đếm hụt làm ngưỡng tỷ lệ
+/// tụt xuống và mở đường cho việc đánh `missing` cả thư viện. Đếm dư thì ngược
+/// lại — guard chặt hơn cần thiết, tức là chỉ tốn một lượt presence, không mất gì.
+///
+/// # Errors
+/// Lỗi SQLite.
+pub fn file_count(conn: &Connection, root_id: i64) -> Result<u64, DbError> {
+    let mut stmt =
+        conn.prepare_cached("SELECT COUNT(*) FROM files WHERE root_id = ?1 AND state <> 'gone'")?;
+    let n: i64 = stmt.query_row([root_id], |r| r.get(0))?;
+    Ok(u64::try_from(n).unwrap_or(0))
+}
+
 pub fn groups_by_key(
     conn: &Connection,
     domain: &DomainId,

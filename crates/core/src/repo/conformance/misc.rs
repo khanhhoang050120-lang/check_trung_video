@@ -1,8 +1,6 @@
 //! Kịch bản tương thích cho tra cứu, journal, roots/volumes, park/unpark, ledger.
 
-use crate::model::{
-    Backend, FileLoc, JournalState, Root, RootKind, ScanPhase, ScanProgress, State, Volume,
-};
+use crate::model::{FileLoc, JournalState, State};
 use crate::repo::types::{
     DedupEvent, EventFilter, EventMethod, EventResult, GroupNote, GroupOp, JournalRow, Patch,
     Transition,
@@ -124,58 +122,6 @@ pub fn journal_vong_doi(repo: &dyn Repository) {
     assert!(repo.journal_update(4_242, JournalState::Done, false, NOW).is_err());
 }
 
-pub fn roots_volumes_upsert(repo: &dyn Repository) {
-    let roots = repo.root_list().unwrap();
-    assert_eq!(roots.len(), 2);
-    let remote = roots.iter().find(|r| r.id == 2).unwrap();
-    assert_eq!(remote.windows_unc.as_deref(), Some(r"\\192.168.1.214\Video"));
-    assert_eq!(remote.label.as_deref(), Some("windows-214"));
-
-    // Upsert lại theo path: giữ id, đổi nhãn.
-    let mut again = remote.clone();
-    again.label = Some("moi".to_owned());
-    assert_eq!(repo.root_upsert(&again, NOW + 1).unwrap(), 2);
-    assert_eq!(
-        repo.root_list().unwrap().iter().find(|r| r.id == 2).unwrap().label.as_deref(),
-        Some("moi")
-    );
-
-    let v = Volume {
-        id: 0,
-        domain_id: DOMAIN,
-        fstype: "btrfs".to_owned(),
-        mount: "/volume1".into(),
-        backend: Backend::Unprobed,
-        dest_needs_write: false,
-        supports_lease: None,
-        fs_version: None,
-        kernel: Some("5.10".to_owned()),
-        probed_at: None,
-        probe_error: None,
-    };
-    let vid = repo.volume_upsert(&v).unwrap();
-    let mut v2 = v.clone();
-    v2.backend = Backend::KernelDedupe;
-    v2.probed_at = Some(NOW);
-    assert_eq!(repo.volume_upsert(&v2).unwrap(), vid, "cùng domain_id thì cập nhật");
-    let list = repo.volume_list().unwrap();
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0].backend, Backend::KernelDedupe);
-
-    let sp = ScanProgress {
-        root_id: 1,
-        phase: ScanPhase::A,
-        last_completed_dir: Some("phim/2024".into()),
-        started_at: Some(NOW),
-        finished_at: None,
-        last_reconcile_done: None,
-        last_presence_scan: None,
-    };
-    repo.scan_progress_set(&sp).unwrap();
-    assert_eq!(repo.scan_progress_get(1).unwrap(), Some(sp));
-    assert_eq!(repo.scan_progress_get(2).unwrap(), None);
-}
-
 pub fn park_unpark_domain(repo: &dyn Repository) {
     let a = ident(1, 100, 5, 5);
     let b = ident(2, 100, 5, 5);
@@ -237,8 +183,7 @@ pub fn purge_xoa_gone_va_event_cu(repo: &dyn Repository) {
     let a = ident(1, 100, 5, 5);
     seed(repo, &a, &loc("a.mp4"));
     repo.mark_missing(&loc("a.mp4"), NOW - 500 * 86_400_000).unwrap();
-    repo.presence_begin().unwrap();
-    repo.presence_finish(1, NOW - 400 * 86_400_000, 30 * 86_400_000).unwrap();
+    repo.presence_expire(1, NOW - 430 * 86_400_000, NOW - 400 * 86_400_000).unwrap();
     assert_eq!(get(repo, &a.key).state, State::Gone);
     repo.record_event(&DedupEvent::new(
         NOW - 400 * 86_400_000,
@@ -326,25 +271,6 @@ pub fn purge_go_canonical_tro_vao_file_da_xoa(repo: &dyn Repository) {
 }
 
 /// `root_upsert` với id tường minh đã bị một path khác chiếm: cấp id mới, không lỗi.
-pub fn root_upsert_id_da_bi_chiem_thi_cap_id_moi(repo: &dyn Repository) {
-    let mut r = Root {
-        id: 1,
-        path: "/khac".into(),
-        domain_id: DOMAIN,
-        kind: RootKind::Local,
-        label: None,
-        windows_unc: None,
-        active: true,
-        added_at: NOW,
-    };
-    let id = repo.root_upsert(&r, NOW).unwrap();
-    assert_ne!(id, 1, "id 1 đã thuộc về root khác");
-
-    // Gọi lại cùng path thì trả đúng id cũ, không tạo thêm root.
-    r.id = 0;
-    assert_eq!(repo.root_upsert(&r, NOW + 1).unwrap(), id);
-}
-
 /// `requeue_verified` với tiền tố có dấu `/` ở cuối phải khớp như không có.
 pub fn requeue_verified_dau_gach_thua(repo: &dyn Repository) {
     let a = ident(1, 100, 1, 1);

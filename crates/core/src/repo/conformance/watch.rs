@@ -1,10 +1,12 @@
-//! Kịch bản tương thích cho watcher, reconcile và presence scan (spec 5.9, 5.10).
+//! Kịch bản tương thích cho watcher và reconcile (spec 5.9).
+//!
+//! Presence scan có file riêng: [`super::presence`].
 
 use crate::model::{FileLoc, State};
-use crate::repo::types::Patch;
+use crate::repo::types::{GroupOp, Patch, Transition};
 use crate::repo::Repository;
 
-use super::{get, ident, loc, move_to, rloc, seed, DELAY, NOW};
+use super::{get, ident, loc, move_to, rloc, seed, NOW};
 
 pub fn rename_doi_path_va_danh_dau_row_bi_de(repo: &dyn Repository) {
     // rsync/Nextcloud ghi temp rồi rename đè lên b.mp4: inode cũ của b.mp4 biến mất
@@ -89,61 +91,6 @@ pub fn restore_or_reset_theo_fingerprint(repo: &dyn Repository) {
     assert_eq!(get(repo, &a.key).enq.map(|f| f.mtime_ns), Some(8));
     // Khóa không tồn tại: không lỗi.
     repo.restore_or_reset(&ident(77, 0, 0, 0).key, &ident(77, 1, 1, 1), NOW).unwrap();
-}
-
-pub fn presence_scan_danh_missing_va_gone(repo: &dyn Repository) {
-    let a = ident(1, 100, 5, 5);
-    let b = ident(2, 100, 5, 5);
-    let c = ident(3, 100, 5, 5);
-    let ra = move_to(repo, &seed(repo, &a, &loc("a.mp4")), State::Sized, Patch::new().identity(a));
-    move_to(repo, &ra, State::Distinct, Patch::new().ready_at(None));
-    seed(repo, &b, &loc("b.mp4"));
-    seed(repo, &c, &loc("c.mp4"));
-    // c đã missing từ rất lâu.
-    repo.mark_missing(&loc("c.mp4"), NOW - 400 * 86_400_000).unwrap();
-    // Row ở root khác không được đụng.
-    let mut r2 = ident(9, 100, 5, 5);
-    r2.domain_id = crate::model::DomainId([2; 16]);
-    seed(repo, &r2, &FileLoc::new(2, "x.mp4"));
-
-    let scan_id = NOW + 10;
-    repo.presence_begin().unwrap();
-    // Chỉ thấy a với fingerprint khớp.
-    let restored = repo.presence_seen(&[(a.key, a.fingerprint(), loc("a.mp4"))], scan_id).unwrap();
-    assert_eq!(restored, 0, "a không missing nên không có gì để phục hồi");
-    let (to_missing, to_gone) = repo.presence_finish(1, scan_id, 365 * 86_400_000).unwrap();
-    assert_eq!((to_missing, to_gone), (1, 1));
-    assert_eq!(get(repo, &a.key).state, State::Distinct);
-    assert_eq!(get(repo, &b.key).state, State::Missing);
-    assert_eq!(get(repo, &c.key).state, State::Gone);
-    assert_eq!(get(repo, &r2.key).state, State::Settling, "root khác không bị đụng");
-
-    // presence_seen với row missing: phục hồi kèm cập nhật path.
-    repo.presence_begin().unwrap();
-    let n =
-        repo.presence_seen(&[(b.key, b.fingerprint(), loc("moved/b.mp4"))], scan_id + 1).unwrap();
-    assert_eq!(n, 1);
-    let rb = get(repo, &b.key);
-    assert_eq!((rb.state, rb.loc), (State::Settling, loc("moved/b.mp4")));
-    repo.presence_finish(1, scan_id + 1, 365 * 86_400_000).unwrap();
-
-    // Gọi seen/finish mà chưa begin → lỗi rõ ràng.
-    assert!(repo.presence_seen(&[], NOW).is_err());
-    assert!(repo.presence_finish(1, NOW, 0).is_err());
-}
-
-pub fn presence_khong_dung_row_moi_cap_nhat(repo: &dyn Repository) {
-    // Bản chốt mục 6: file upload trong lúc walk không có trong `seen`, nhưng
-    // updated_at >= scan_id nên không bị đánh missing.
-    let scan_id = NOW + 10;
-    repo.presence_begin().unwrap();
-    seed(repo, &ident(1, 100, 5, 5), &loc("cu.mp4")); // updated_at = NOW < scan_id
-    repo.upsert_pending(&ident(2, 100, 5, 5), &loc("moi.mp4"), scan_id + DELAY, 0, scan_id + 5)
-        .unwrap();
-    let (to_missing, _) = repo.presence_finish(1, scan_id, 0).unwrap();
-    assert_eq!(to_missing, 1);
-    assert_eq!(get(repo, &ident(1, 0, 0, 0).key).state, State::Missing);
-    assert_eq!(get(repo, &ident(2, 0, 0, 0).key).state, State::Settling, "row mới không bị đụng");
 }
 
 /// `rename_prefix` khi `old_dir` trỏ thẳng vào một file, và khi đổi sang root khác.
@@ -232,22 +179,42 @@ pub fn rename_prefix_ca_root_va_len_goc(repo: &dyn Repository) {
     assert_eq!(get(repo, &a.key).loc.rel_path.to_string_lossy(), "kho/a.mp4");
 }
 
-/// `presence_seen` chỉ tra `roots` khi thật sự phải khôi phục một row `missing`.
-pub fn presence_seen_bo_qua_entry_khong_lien_quan(repo: &dyn Repository) {
+/// Row `missing` quay lại với nội dung **khác** thì rời nhóm — và nếu nó đang là
+/// canonical thì nhóm phải mất gốc.
+///
+/// Bản SQLite đi qua `upsert_in_tx` nên được bước này miễn phí; bản bộ nhớ gọi
+/// thẳng `decide_upsert`/`apply_upsert` nên phải tự làm. Bỏ sót thì nhóm trỏ vào
+/// một file không còn thuộc nhóm và **kẹt vĩnh viễn**: spec 5.4 chỉ bầu lại
+/// canonical khi con trỏ NULL hoặc file canonical `missing` (BUG-011 mục 6).
+pub fn restore_or_reset_canonical_doi_noi_dung_thi_group_mat_goc(repo: &dyn Repository) {
+    let (a, b, gid) = nhom_hai_file(repo);
+
+    repo.mark_missing(&loc("a.mp4"), NOW + 1).unwrap();
+    repo.restore_or_reset(&a.key, &ident(1, 100, 9, 9), NOW + 2).unwrap();
+
+    let sau = get(repo, &a.key);
+    assert_eq!(sau.state, State::Settling, "nội dung khác thì xử lý lại từ đầu");
+    assert_eq!(sau.group_id, None, "rời nhóm");
+    assert_eq!(
+        repo.group_get(gid).unwrap().unwrap().canonical_file_id,
+        None,
+        "nhóm phải mất gốc để lần verify sau bầu lại"
+    );
+    assert_eq!(get(repo, &b.key).group_id, Some(gid), "B vẫn trong nhóm");
+}
+
+/// A (canonical) và B cùng một nhóm; trả `(A, B, group_id)`.
+pub(super) fn nhom_hai_file(
+    repo: &dyn Repository,
+) -> (crate::model::Identity, crate::model::Identity, i64) {
     let a = ident(1, 100, 5, 5);
-    let r = seed(repo, &a, &loc("a.mp4"));
-    repo.presence_begin().unwrap();
-    let la = ident(50, 100, 1, 1);
-    let n = repo
-        .presence_seen(
-            &[
-                (a.key, r.fingerprint(), loc("a.mp4")),
-                (la.key, la.fingerprint(), FileLoc::new(999, "x.mp4")),
-            ],
-            NOW + 1,
-        )
-        .unwrap();
-    assert_eq!(n, 0, "không row nào đang missing");
-    repo.presence_finish(1, NOW + 2, 3_600_000).unwrap();
-    assert_eq!(get(repo, &a.key).state, State::Settling, "row được thấy phải sống");
+    let b = ident(2, 100, 5, 5);
+    let ra = move_to(repo, &seed(repo, &a, &loc("a.mp4")), State::Sized, Patch::new().identity(a));
+    let rb = move_to(repo, &seed(repo, &b, &loc("b.mp4")), State::Sized, Patch::new().identity(b));
+    let t = Transition::new(rb.id, State::Sized, State::Hashed, Patch::new(), NOW)
+        .with_group(GroupOp::Create { canonical: ra.id, sparse_hash: [7; 32], hash_version: 1 });
+    assert!(repo.apply(&t).unwrap());
+    let gid = get(repo, &a.key).group_id.expect("A vào nhóm");
+    assert_eq!(repo.group_get(gid).unwrap().unwrap().canonical_file_id, Some(ra.id));
+    (a, b, gid)
 }

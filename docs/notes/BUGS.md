@@ -4,6 +4,39 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-019 — Con trỏ quét được đọc nhưng chưa bao giờ được ghi
+
+**Ngày:** 2026-09-04 · **Phase:** 3 (lộ ra khi khảo sát Phase 4) · **Nơi:** `crates/linux/src/daemon.rs`
+
+**Mức độ:** trung bình. Không mất dữ liệu, nhưng một tiêu chí hoàn thành đã bị tích
+xanh oan, và đó mới là phần đáng ghi.
+
+**Triệu chứng.** `grep -rn "scan_progress_set" crates/` cho đúng **một** lời gọi ngoài
+tầng kho dữ liệu, và nó nằm trong một file test.
+
+**Nguyên nhân gốc.** `quet_toan_bo` **đọc** con trỏ (`scan_progress_get`) rồi truyền cho
+`pha_a`, nhưng không ai **ghi** nó lại. `KetQuaQuet` thậm chí không có trường nào mang
+thư mục cuối đã xong, nên dù muốn ghi cũng không có gì để ghi. Hệ quả: khởi động lại
+giữa chừng thì quét lại cả root từ đầu.
+
+**Vì sao test không bắt được.** `end_to_end.rs::khoi_phuc_dung_con_tro_sau_khi_bi_cat_giua_chung`
+truyền con trỏ **thẳng cho `pha_a`**. Nó chứng minh logic tiếp tục đúng chỗ — và điều đó
+có thật, kể cả trường hợp `a/` so với `a-b` — nhưng không chứng minh daemon **lưu** con
+trỏ. Hai việc khác nhau, và chỉ việc thứ nhất được kiểm.
+
+**Hậu quả về sổ sách.** Tiêu chí 4 của Phase 3 ("khởi động lại giữa scan → cursor tiếp
+đúng chỗ") đã được đánh ✅ trong `docs/KIEM-CHUNG-KHONG-CAN-NAS.md`. Đánh sai. Đã sửa
+thành ⚠️ kèm lý do; phần vá thuộc Gói B của Phase 4 (`ConTro`, xem
+`docs/notes/PHASE-4-KE-HOACH.md`).
+
+**Bài học.** Một tiêu chí dạng "sau khi khởi động lại thì X" có **hai** mảnh: trạng thái
+được **ghi** trước khi chết, và trạng thái được **dùng** sau khi sống lại. Test mảnh thứ
+hai dễ viết hơn nhiều — nó chỉ cần truyền tham số — nên rất dễ viết xong rồi tích cả tiêu
+chí. **Kiểm phía ghi bằng cách đọc lại từ kho dữ liệu, không phải bằng cách tự truyền
+vào.** Đã thêm vào CHECKLIST.
+
+---
+
 ## BUG-018 — Mọi file trong một root mượn `sub_id` của root, nên hai subvolume Btrfs bị gộp làm một
 
 **Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/linux/src/open.rs`

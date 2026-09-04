@@ -52,6 +52,20 @@ done
 - [ ] Vì vậy phần Linux của `crates/daemon/src/platform/linux.rs` (phụ thuộc `nasdedup-db`) vẫn chỉ CI mới thấy → giữ file đó **mỏng**, đẩy hết logic xuống `nasdedup-linux`.
 - [ ] Code chạy được thì vẫn phải CI Linux xác nhận: `cargo check` không chạy test, và syscall chỉ lộ lỗi khi thật sự gọi.
 
+## Khi tiêu chí có dạng "sau khi khởi động lại thì X"
+
+Mọi tiêu chí kiểu này có **hai** mảnh: trạng thái được **ghi** trước khi chết, và trạng
+thái được **dùng** sau khi sống lại. Mảnh thứ hai dễ viết hơn hẳn — chỉ cần truyền tham
+số vào hàm — nên rất dễ viết xong rồi tích cả tiêu chí. Xem BUG-019: con trỏ quét được
+đọc nhưng chưa bao giờ được ghi, suốt cả Phase 3.
+
+- [ ] Kiểm phía **ghi** bằng cách **đọc lại từ kho dữ liệu**, không phải bằng cách tự
+      truyền giá trị vào hàm.
+- [ ] `grep` xem hàm ghi (`*_set`, `*_save`, `*_commit`) có lời gọi nào **ngoài test** không.
+      Chỉ có lời gọi trong test = code chết.
+- [ ] Kiểu trả về của bước dài (ví dụ `KetQuaQuet`) có mang đủ thông tin để ghi tiến độ
+      không? Không mang thì dù muốn ghi cũng không có gì để ghi.
+
 ## Khi viết test cho một tiêu chí đo lường
 
 Lần đầu viết test cho tiêu chí "tốc độ đọc ≤ 1,1 × `read_rate`", bản làm ra tự viết

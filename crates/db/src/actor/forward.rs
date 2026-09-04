@@ -136,8 +136,12 @@ impl Repository for DbHandle {
         forward!(self, |r| r.restore_or_reset(&key, &id, now))
     }
 
-    fn presence_begin(&self) -> Result<(), RepoError> {
-        forward!(self, |r| r.presence_begin())
+    fn presence_begin(&self, root_id: i64) -> Result<(), RepoError> {
+        forward!(self, |r| r.presence_begin(root_id))
+    }
+
+    fn presence_abort(&self) -> Result<(), RepoError> {
+        forward!(self, |r| r.presence_abort())
     }
 
     fn presence_seen(
@@ -149,13 +153,12 @@ impl Repository for DbHandle {
         forward!(self, |r| r.presence_seen(&seen, now))
     }
 
-    fn presence_finish(
-        &self,
-        root_id: i64,
-        scan_id: Ts,
-        retention_ms: i64,
-    ) -> Result<(u64, u64), RepoError> {
-        forward!(self, |r| r.presence_finish(root_id, scan_id, retention_ms))
+    fn presence_finish(&self, root_id: i64, scan_id: Ts) -> Result<u64, RepoError> {
+        forward!(self, |r| r.presence_finish(root_id, scan_id))
+    }
+
+    fn presence_expire(&self, root_id: i64, cutoff: Ts, now: Ts) -> Result<u64, RepoError> {
+        forward!(self, |r| r.presence_expire(root_id, cutoff, now))
     }
 
     fn journal_begin(&self, j: &JournalRow) -> Result<i64, RepoError> {
@@ -193,6 +196,10 @@ impl Repository for DbHandle {
 
     fn root_list(&self) -> Result<Vec<Root>, RepoError> {
         forward!(self, |r| r.root_list())
+    }
+
+    fn file_count(&self, root_id: i64) -> Result<u64, RepoError> {
+        forward!(self, |r| r.file_count(root_id))
     }
 
     fn scan_progress_get(&self, root_id: i64) -> Result<Option<ScanProgress>, RepoError> {

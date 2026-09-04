@@ -34,10 +34,20 @@ pub(super) struct Store {
     pub scan: BTreeMap<i64, ScanProgress>,
     pub meta: BTreeMap<String, String>,
     pub notes: BTreeMap<i64, GroupNote>,
-    /// Bảng tạm của presence scan; `None` khi không có scan nào đang chạy.
-    pub seen: Option<HashSet<FileKey>>,
+    /// Phiên presence scan đang mở; `None` khi không có scan nào đang chạy.
+    pub phien: Option<Phien>,
     /// Số lần ghi durable, để test khẳng định `journal_update(durable = true)`.
     pub durable_writes: u64,
+}
+
+/// Một phiên presence scan: tập `seen` **cùng** root mà nó thuộc về.
+///
+/// `root_id` nằm ngay cạnh tập `seen` chứ không phải chỉ là tham số của
+/// `presence_finish`: tách rời hai thứ đó thì `finish` nhầm root im lặng trả
+/// `(0, 0)` và nuốt gọn cả lượt quét. Xem `Repository::presence_begin`.
+pub(super) struct Phien {
+    pub root_id: i64,
+    pub seen: HashSet<FileKey>,
 }
 
 impl Store {
@@ -56,6 +66,29 @@ impl Store {
 
     pub fn file_by_key_mut(&mut self, key: &FileKey) -> Option<&mut FileRecord> {
         self.files.values_mut().find(|f| f.key == *key)
+    }
+
+    /// Bỏ con trỏ canonical khi **chính lần upsert này** đẩy row ra khỏi nhóm.
+    ///
+    /// Nội dung file đã đổi nên nhóm không còn quyền coi nó là bản gốc; để nguyên
+    /// thì nhóm trỏ vào một file không thuộc nhóm và **kẹt vĩnh viễn**, vì spec 5.4
+    /// chỉ bầu lại canonical khi con trỏ NULL hoặc file canonical `missing`
+    /// (BUG-011 mục 6).
+    ///
+    /// Điều kiện phải là "vừa rời nhóm", không phải "hiện không thuộc nhóm nào":
+    /// một canonical mồ côi từ trước không được mất gốc chỉ vì một sự kiện
+    /// fingerprint-không-đổi đi qua (BUG-009 lỗi 3).
+    ///
+    /// Dùng chung cho cả ba đường upsert của bản bộ nhớ (`upsert_pending`,
+    /// `restore_or_reset`, `presence_seen`) — bản SQLite có nó sẵn trong
+    /// `upsert_in_tx`, nên chép đôi ở đây là cách hai bản lệch nhau lần nữa.
+    pub fn bo_goc_khi_roi_nhom(&mut self, row_id: i64, truoc: Option<i64>, sau: Option<i64>) {
+        let (Some(g), None) = (truoc, sau) else { return };
+        if let Some(grp) = self.groups.get_mut(&g) {
+            if grp.canonical_file_id == Some(row_id) {
+                grp.canonical_file_id = None;
+            }
+        }
     }
 }
 
@@ -198,8 +231,20 @@ impl Repository for MemoryRepository {
         watch::restore_or_reset(&mut *self.lock()?, key, id, now)
     }
 
-    fn presence_begin(&self) -> Result<(), RepoError> {
-        self.lock()?.seen = Some(HashSet::new());
+    fn presence_begin(&self, root_id: i64) -> Result<(), RepoError> {
+        let mut s = self.lock()?;
+        if let Some(p) = &s.phien {
+            return Err(RepoError::Constraint(format!(
+                "presence_begin: đang có phiên cho root {}",
+                p.root_id
+            )));
+        }
+        s.phien = Some(Phien { root_id, seen: HashSet::new() });
+        Ok(())
+    }
+
+    fn presence_abort(&self) -> Result<(), RepoError> {
+        self.lock()?.phien = None;
         Ok(())
     }
 
@@ -211,13 +256,12 @@ impl Repository for MemoryRepository {
         watch::presence_seen(&mut *self.lock()?, seen, now)
     }
 
-    fn presence_finish(
-        &self,
-        root_id: i64,
-        scan_id: Ts,
-        retention_ms: i64,
-    ) -> Result<(u64, u64), RepoError> {
-        watch::presence_finish(&mut *self.lock()?, root_id, scan_id, retention_ms)
+    fn presence_finish(&self, root_id: i64, scan_id: Ts) -> Result<u64, RepoError> {
+        watch::presence_finish(&mut *self.lock()?, root_id, scan_id)
+    }
+
+    fn presence_expire(&self, root_id: i64, cutoff: Ts, now: Ts) -> Result<u64, RepoError> {
+        Ok(watch::presence_expire(&mut *self.lock()?, root_id, cutoff, now))
     }
 
     fn journal_begin(&self, j: &JournalRow) -> Result<i64, RepoError> {
@@ -252,6 +296,10 @@ impl Repository for MemoryRepository {
 
     fn root_list(&self) -> Result<Vec<Root>, RepoError> {
         Ok(self.lock()?.roots.values().cloned().collect())
+    }
+
+    fn file_count(&self, root_id: i64) -> Result<u64, RepoError> {
+        Ok(misc::file_count(&*self.lock()?, root_id))
     }
 
     fn scan_progress_get(&self, root_id: i64) -> Result<Option<ScanProgress>, RepoError> {

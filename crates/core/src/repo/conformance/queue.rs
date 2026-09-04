@@ -451,6 +451,39 @@ pub fn scan_insert_root_chua_dang_ky_bi_tu_choi(repo: &dyn Repository) {
     assert!(matches!(e, Err(crate::repo::RepoError::Constraint(_))), "{e:?}");
 }
 
+/// Một lô `scan_insert` là **một** transaction: entry hỏng ở giữa lô thì các row
+/// đứng trước nó cũng không được ở lại.
+///
+/// Bản SQLite chạy cả lô trong `unchecked_transaction` nên rollback lo hộ; bản
+/// bộ nhớ chèn tại chỗ nên phải kiểm hết `root_kind` trước khi chèn row đầu tiên.
+/// Bỏ sót thì pha A của initial scan để lại một thư viện ghi dở, và tệ hơn là làm
+/// bẩn `file_count` — chính phép đếm mà guard của presence scan dựa vào.
+///
+/// Kịch bản `scan_insert_root_chua_dang_ky_bi_tu_choi` dùng lô một row nên không
+/// bao giờ chạm nhánh này: điều kiện cần, không đủ.
+pub fn scan_insert_lo_hong_khong_de_lai_ghi_do(repo: &dyn Repository) {
+    use crate::repo::ScanRow;
+    let tot = ident(1, 100, 5, 5);
+    let xau = ident(2, 200, 6, 6);
+    let rows = vec![
+        ScanRow { id: tot, loc: loc("tot.mp4"), state: State::Sized, ready_at: None, priority: 2 },
+        ScanRow {
+            id: xau,
+            loc: crate::model::FileLoc::new(77, "xau.mp4"),
+            state: State::Sized,
+            ready_at: None,
+            priority: 2,
+        },
+    ];
+    let e = repo.scan_insert(&rows, NOW);
+    assert!(matches!(e, Err(crate::repo::RepoError::Constraint(_))), "{e:?}");
+    assert!(
+        repo.find_by_key(&tot.key).unwrap().is_none(),
+        "row đứng trước entry hỏng phải biến mất"
+    );
+    assert_eq!(repo.file_count(1).unwrap(), 0, "lô hỏng không được làm bẩn phép đếm");
+}
+
 /// Pha B: chỉ đánh thức row có bạn cùng kích thước; phần còn lại thành `distinct`
 /// mà **không đọc một byte nào** (spec 5.10).
 pub fn scan_phase_b_chi_danh_thuc_row_co_ban_cung_kich_thuoc(repo: &dyn Repository) {

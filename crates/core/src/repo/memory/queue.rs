@@ -26,13 +26,7 @@ pub fn upsert_pending(
     if let Some((row_id, was_group, now_group, dropped)) = existing {
         // Fingerprint đổi làm mất group: nếu row là canonical thì group mất gốc,
         // để lần verify kế tiếp bầu lại (spec 4.3).
-        if let (Some(g), None) = (was_group, now_group) {
-            if let Some(grp) = s.groups.get_mut(&g) {
-                if grp.canonical_file_id == Some(row_id) {
-                    grp.canonical_file_id = None;
-                }
-            }
-        }
+        s.bo_goc_khi_roi_nhom(row_id, was_group, now_group);
         return Ok(UpsertResult { id: row_id, dropped_as_self_event: dropped });
     }
 
@@ -42,11 +36,26 @@ pub fn upsert_pending(
 }
 
 /// Chèn lô của initial scan; bỏ qua khóa đã có (spec 5.10 pha A).
+///
+/// Cả lô là **một** transaction (xem doc của `Repository::scan_insert`): bản
+/// SQLite chạy trong `unchecked_transaction` nên một entry hỏng làm rollback
+/// sạch. Ở đây phải tự bảo đảm, và cách rẻ nhất là tra hết `root_kind` **trước**
+/// khi chèn row đầu tiên — `root_kind` là nhánh lỗi duy nhất của hàm này
+/// (`INSERT ... ON CONFLICT DO NOTHING` không hỏng được), nên kiểm xong là phần
+/// còn lại không thể thất bại và không cần chụp-rồi-hoàn-tác (thứ ở đây còn phải
+/// nhớ khôi phục cả `next_id`).
+///
+/// Vẫn tra **tuần tự theo thứ tự của lô** để root xấu đầu tiên là root được nêu
+/// trong thông điệp lỗi ở cả hai bản cài đặt.
 pub fn scan_insert(s: &mut Store, rows: &[ScanRow], now: Ts) -> Result<u64, RepoError> {
+    // Root chưa đăng ký là lỗi lập trình, giống `upsert_pending`. Một lô có thể
+    // trộn nhiều root nên phải hỏi cho từng row, không phải một lần cho cả lô.
+    for r in rows {
+        s.root_kind(r.loc.root_id)?;
+    }
+
     let mut n = 0;
     for r in rows {
-        // Root chưa đăng ký là lỗi lập trình, giống `upsert_pending`.
-        s.root_kind(r.loc.root_id)?;
         if s.files.values().any(|f| f.key == r.id.key) {
             continue;
         }

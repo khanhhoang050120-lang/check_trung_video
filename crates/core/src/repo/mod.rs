@@ -186,7 +186,26 @@ pub trait Repository {
     /// `missing` → `prev_state` nếu fingerprint khớp, ngược lại → `settling` (spec 4.4).
     fn restore_or_reset(&self, key: &FileKey, id: &Identity, now: Ts) -> Result<(), RepoError>;
 
-    fn presence_begin(&self) -> Result<(), RepoError>;
+    /// Mở phiên presence scan cho **một** root (spec 5.10).
+    ///
+    /// Phiên gắn với `root_id` và chỉ có **một** phiên tại một thời điểm: gọi lại
+    /// khi đang có phiên là lỗi, không phải là "bắt đầu lại". Cả hai ràng buộc đều
+    /// là để chặn một lớp lỗi im lặng đã ghi ở `docs/notes/ISSUES.md`: bản cũ xóa
+    /// trắng tập `seen` mỗi lần `begin`, nên hai root quét chồng nhau làm file của
+    /// root trước — vừa được **thấy** — bị đánh `missing` mà không một lỗi nào phát
+    /// ra, và `presence_finish` nhầm root thì nuốt gọn tập `seen` của lượt đang
+    /// chạy. Có `root_id` cạnh tập `seen` thì cả hai thành lỗi ngay tại chỗ.
+    ///
+    /// Không cần token: "một phiên tại một thời điểm" đã làm cho không tồn tại
+    /// phiên thứ hai để một tay cầm cũ trỏ nhầm vào.
+    fn presence_begin(&self, root_id: i64) -> Result<(), RepoError>;
+
+    /// Bỏ phiên đang mở, **không** đánh dấu gì; no-op khi không có phiên.
+    ///
+    /// Đây là nhánh "bị cắt giữa chừng (khung giờ, SIGTERM) → bỏ kết quả" của spec
+    /// 5.10. Không có hàm này thì tập `seen` dở dang nằm lại và lượt presence kế
+    /// tiếp bắt đầu từ một trạng thái không ai kiểm soát.
+    fn presence_abort(&self) -> Result<(), RepoError>;
 
     /// Ghi nhận file đã thấy; row `missing` cùng khóa được phục hồi kèm cập nhật path.
     fn presence_seen(
@@ -195,13 +214,37 @@ pub trait Repository {
         now: Ts,
     ) -> Result<u64, RepoError>;
 
-    /// Kết thúc presence scan cho một root: `(→missing, →gone)` (spec 5.10).
-    fn presence_finish(
-        &self,
-        root_id: i64,
-        scan_id: Ts,
-        retention_ms: i64,
-    ) -> Result<(u64, u64), RepoError>;
+    /// Kết thúc phiên presence cho một root: row không thấy → `missing`; trả số row đổi.
+    ///
+    /// `root_id` phải trùng root của phiên, ngược lại là lỗi và phiên **không** bị
+    /// đóng — nuốt tập `seen` của một lượt quét đang chạy còn tệ hơn báo lỗi.
+    ///
+    /// Chỉ làm nửa **đảo ngược được**: `missing` phục hồi lại được qua
+    /// `presence_seen`/`restore_or_reset` kèm `prev_state`. Nửa `missing → gone`
+    /// nằm ở [`Repository::presence_expire`] vì `gone` dẫn tới `purge` xóa hẳn row
+    /// — kèm `skip_reason` (kể cả `user_undo`) và liên kết nhóm — nên nó phải có
+    /// guard riêng, chặt hơn, do caller quyết định (spec dòng 287).
+    fn presence_finish(&self, root_id: i64, scan_id: Ts) -> Result<u64, RepoError>;
+
+    /// `missing` cũ hơn `cutoff` → `gone` cho một root; trả số row đổi.
+    ///
+    /// Tách khỏi `presence_finish` vì hai việc khác hẳn nhau về mức nguy hiểm và
+    /// phải chịu hai guard khác nhau. Đánh `missing` sai thì một lượt presence sau
+    /// sửa được; `gone` thì `purge` xóa hẳn row, mất `skip_reason` (một file admin
+    /// đã `nasdedup undo` quay lại thành ứng viên dedup, trái spec dòng 958) và mất
+    /// cả lịch sử verify. Gộp chung một guard nghĩa là một lượt quét hụt ở lượt N
+    /// đánh oan hàng nghìn row `missing`, rồi chính những row ấy bị lượt N+k xóa
+    /// sạch mà không bước nào hỏi lại root có thật sự được quét đủ hay không.
+    ///
+    /// **Không** cần phiên presence và không đọc tập `seen`: row còn `missing` sau
+    /// một lượt quét đúng là row không được thấy (`presence_seen` đã phục hồi mọi
+    /// row nó thấy). Caller gọi sau `presence_finish`; vì `cutoff` là mốc tuyệt
+    /// đối, row vừa bị đánh `missing` ở lượt này (`updated_at = scan_id`) không lọt
+    /// vào, kể cả khi `retention = 0`.
+    ///
+    /// Caller **phải** đặt guard chặt hơn của `presence_finish` trước khi gọi: tốt
+    /// nhất là hai lượt presence liên tiếp cùng kết luận.
+    fn presence_expire(&self, root_id: i64, cutoff: Ts, now: Ts) -> Result<u64, RepoError>;
 
     // --- journal (spec 5.7.3, 5.11.2) ---
 
@@ -229,6 +272,39 @@ pub trait Repository {
     fn root_upsert(&self, r: &Root, now: Ts) -> Result<i64, RepoError>;
 
     fn root_list(&self) -> Result<Vec<Root>, RepoError>;
+
+    /// Số row **còn sống** của một root: mọi state trừ `gone`.
+    ///
+    /// Đây là **mẫu số** của guard presence scan, không phải guard tự thân. Phép
+    /// kiểm "khác rỗng" (`file_count > 0`) không bảo vệ được gì: nó chỉ trả `0` khi
+    /// root không còn row nào ngoài `gone`, mà đúng lúc ấy `presence_finish` cũng
+    /// là no-op. Nói cách khác điều kiện `file_count > 0` **đúng** trong mọi tổ hợp
+    /// mà `presence_finish` có thể phá, và chỉ sai đúng lúc nó chẳng chặn gì.
+    ///
+    /// Guard thật là phép **so tỷ lệ**: caller đo `file_count(root)` **trước** lượt
+    /// quét, rồi từ chối `presence_finish` khi số file walk thấy được nhỏ hơn một
+    /// phần cấu hình được của con số ấy — ngưỡng chặt cho root `local` (mọi lần xóa
+    /// thật đều đã đi qua watcher, nên một lượt presence đòi đánh hàng nghìn
+    /// `missing` gần như luôn là lỗi mount), ngưỡng riêng cho `remote` (không có
+    /// watcher). Phần vượt ngưỡng → ALERT và chờ admin xác nhận, không tự đánh dấu.
+    /// Đọc lỗi thì coi như `0`, tức là **chặn**.
+    ///
+    /// Phép đếm này **không** phân biệt được "root unmount" với "root bị xóa sạch
+    /// thật": unmount không sinh event `Remove` nào (kernel gửi `IN_UNMOUNT`) nên
+    /// row vẫn ở trạng thái sống, còn root vừa bị xóa thật thì tại thời điểm guard
+    /// chạy row cũng chưa kịp bị đánh dấu — hai trường hợp cho cùng một giá trị.
+    /// Thứ phân biệt được hai cái đó là bước kiểm `(st_dev, st_ino)` và `domain_id`
+    /// của `dirfd` root ở spec 5.10, không phải hàm này.
+    ///
+    /// **Đếm cả row `missing`, chỉ bỏ `gone`.** `missing` là thư viện đang chờ được
+    /// thấy lại, nên nó thuộc về mẫu số: một root vừa bị unmount một lượt (đã
+    /// `missing` hết) mà mẫu số thành `0` thì mọi tỷ lệ đều "đạt". `gone` thì ngược
+    /// lại: nó chỉ còn chờ `purge` xóa, tính vào sẽ khiến một root đã xóa sạch
+    /// không bao giờ kết thúc được presence scan.
+    ///
+    /// Root chưa đăng ký trả `0`, không phải lỗi: mẫu số `0` làm guard **đóng**,
+    /// đúng hành vi cần.
+    fn file_count(&self, root_id: i64) -> Result<u64, RepoError>;
 
     fn scan_progress_get(&self, root_id: i64) -> Result<Option<ScanProgress>, RepoError>;
 

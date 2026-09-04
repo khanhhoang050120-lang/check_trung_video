@@ -9,12 +9,16 @@
 
 mod apply;
 mod misc;
+mod presence;
 mod queue;
+mod roots;
 mod watch;
 
 pub use apply::*;
 pub use misc::*;
+pub use presence::*;
 pub use queue::*;
+pub use roots::*;
 pub use watch::*;
 
 use crate::model::{
@@ -126,6 +130,7 @@ macro_rules! repository_conformance_tests {
             upsert_root_chua_dang_ky_bi_tu_choi,
             scan_insert_dat_thang_state_va_bo_qua_row_da_co,
             scan_insert_root_chua_dang_ky_bi_tu_choi,
+            scan_insert_lo_hong_khong_de_lai_ghi_do,
             scan_phase_b_chi_danh_thuc_row_co_ban_cung_kich_thuoc,
             scan_phase_b_khong_dung_row_dang_cho_va_root_khac,
             next_ready_uu_tien_realtime,
@@ -155,12 +160,18 @@ macro_rules! repository_conformance_tests {
             restore_or_reset_theo_fingerprint,
             presence_scan_danh_missing_va_gone,
             presence_khong_dung_row_moi_cap_nhat,
+            restore_or_reset_canonical_doi_noi_dung_thi_group_mat_goc,
+            presence_seen_canonical_doi_noi_dung_thi_group_mat_goc,
+            presence_seen_lo_hong_khong_de_lai_ghi_do,
+            presence_phien_gan_voi_mot_root,
+            presence_finish_khong_tu_dan_toi_gone,
             candidates_loc_va_sap_xep,
             pending_same_size_bo_qua_row_bi_park,
             pending_same_size_theo_scope,
             groups_by_key_theo_id,
             journal_vong_doi,
             roots_volumes_upsert,
+            file_count_dem_row_song_theo_root,
             park_unpark_domain,
             requeue_verified_theo_prefix,
             events_loc_va_gioi_han,

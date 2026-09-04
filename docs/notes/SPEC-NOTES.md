@@ -3,6 +3,29 @@
 Chỗ bản đặc tả mơ hồ, sai, hoặc lệch với code. Sửa được thì sửa thẳng vào spec rồi ghi lại ở đây.
 
 ---
+## SPEC-008 — Hợp đồng presence scan đổi: phiên gắn với root, và tách `gone` ra riêng
+
+**Trạng thái:** đã hiện thực hóa (Phase 4 Gói 0), **spec cần cập nhật mục 3.3 và 5.10**
+
+Spec dòng 285–287 và 841 ghi `presence_begin(&self)` không tham số và một
+`presence_finish` ghép cả `retention_ms`. Thực tế sau Gói 0:
+
+| Spec | Thực tế | Vì sao |
+| :--- | :--- | :--- |
+| `presence_begin(&self)` | `presence_begin(root_id)`, lỗi nếu đã có phiên | Chỉ có **một** bảng tạm `seen` cho cả connection. Không gắn root thì `presence_finish` gọi nhầm root sẽ đánh `missing` cả thư viện của root khác, và không có gì chặn được. Kỷ luật một-thread không chặn được lỗi gọi sai root. |
+| — | `presence_abort()` | Spec 5.10 nói "bị cắt giữa chừng → bỏ kết quả, không đánh dấu gì" nhưng không cho hàm nào làm việc đó. |
+| `presence_finish(...) -> (u64, u64)` làm cả `→ missing` và `→ gone` | `presence_finish(root_id, scan_id) -> u64` (chỉ `→ missing`) + `presence_expire(root_id, cutoff, now) -> u64` | Hai việc khác hẳn nhau về mức nguy hiểm: `→ missing` đảo ngược được, `→ gone` thì không (`purge` xóa hẳn). Ghép chúng dưới **một** guard nghĩa là một guard hỏng làm mất dữ liệu thật. `presence_expire` không cần phiên và không đọc tập `seen`. |
+
+`cutoff` là mốc **tuyệt đối** nên gọi `expire` sau `finish` vẫn không đụng row vừa bị
+đánh `missing` ở chính lượt đó, kể cả khi `retention = 0` — vì thế thứ tự "gone trước
+missing" của bản cũ không còn cần thiết.
+
+Điều này **đảo một quyết định** đã ghi trong `PHASE-4-KE-HOACH.md` ("rủi ro thứ sáu:
+không đổi trait"). Lý do đảo: kỷ luật một-thread giải quyết được hai phiên chồng nhau
+nhưng không giải quyết được `finish` sai root, và chi phí thật chỉ ~40 dòng.
+
+---
+
 ## SPEC-007 — Phase 3 thêm hai hàm vào `Repository`
 
 **Trạng thái:** đã hiện thực hóa, **spec cần cập nhật mục 3.3**

@@ -84,10 +84,13 @@ Còn lại của tầng dữ liệu, để Phase 2 trở đi: chưa có bản c�
 `recovery::decide` đã có và test đủ mọi nhánh, nhưng chưa ai gọi nó lúc boot (cần `statx`, Phase 3);
 và `admin::*` chưa gọi được khi daemon **đang chạy** (xem DEC-015).
 
-Một điểm yếu còn để ngỏ: `presence_begin` không trả về token phiên và không từ chối khi đã có một phiên
-đang chạy — hai bên gọi chồng nhau sẽ xóa tập "đã thấy" của nhau, và `presence_finish` đánh `missing`
-nhầm cho file còn sống. Cả hai bản cài đặt hành xử giống nhau nên bộ test tương thích không thấy gì.
-Hiện chưa có ai gọi; phải xử lý trước khi viết scanner ở Phase 4.
+~~Một điểm yếu còn để ngỏ: `presence_begin` không trả về token phiên và không từ chối khi đã có một phiên
+đang chạy~~ — **đã xử lý ở Gói 0 của Phase 4.** Trait nay là `presence_begin(root_id)` (lỗi khi đã có
+phiên), `presence_abort()` cho nhánh "bị cắt giữa chừng → bỏ kết quả" của spec 5.10, và
+`presence_finish(root_id, scan_id)` báo lỗi khi `root_id` khác root của phiên mà **không** đóng phiên
+(bản cũ trả `(0, 0)` im lặng và nuốt tập `seen`). Không dùng token: "một phiên tại một thời điểm" làm
+cho không tồn tại phiên thứ hai để một tay cầm cũ trỏ nhầm vào. Kịch bản conformance
+`presence_phien_gan_voi_mot_root` khóa cả hai nhánh ở cả hai bản cài đặt.
 
 ---
 

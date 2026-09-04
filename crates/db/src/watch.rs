@@ -157,20 +157,45 @@ pub fn restore_or_reset(
     Ok(())
 }
 
-fn seen_table_exists(conn: &Connection) -> Result<bool, DbError> {
-    let n: i64 = conn.query_row(
+/// Root của phiên presence đang mở, hoặc `None` khi không có phiên.
+///
+/// Bảng tạm sống theo `Connection`, mà DB actor giữ đúng **một** connection cho cả
+/// tiến trình, nên đây cũng chính là trạng thái phiên toàn cục — khớp với bản bộ
+/// nhớ, nơi phiên là một `Option` trong `Store`.
+fn phien_root(conn: &Connection) -> Result<Option<i64>, DbError> {
+    let co: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_temp_master WHERE type = 'table' AND name = 'presence_seen'",
         [],
         |r| r.get(0),
     )?;
-    Ok(n > 0)
+    if co == 0 {
+        return Ok(None);
+    }
+    let root: Option<i64> =
+        conn.query_row("SELECT root_id FROM temp.presence_session", [], |r| r.get(0)).optional()?;
+    Ok(root)
 }
 
-pub fn presence_begin(conn: &Connection) -> Result<(), DbError> {
+const BO_BANG_PHIEN: &str =
+    "DROP TABLE IF EXISTS temp.presence_seen; DROP TABLE IF EXISTS temp.presence_session;";
+
+pub fn presence_begin(conn: &Connection, root_id: i64) -> Result<(), DbError> {
+    // Không `DROP ... IF EXISTS` rồi tạo lại: xóa trắng tập `seen` của một lượt
+    // quét đang chạy là đúng lỗi mà `root_id` cạnh phiên sinh ra để chặn.
+    if let Some(cu) = phien_root(conn)? {
+        return Err(DbError::Constraint(format!("presence_begin: đang có phiên cho root {cu}")));
+    }
     conn.execute_batch(
-        "DROP TABLE IF EXISTS temp.presence_seen;
-         CREATE TEMP TABLE presence_seen (sub_id BLOB NOT NULL, ino INTEGER NOT NULL, PRIMARY KEY (sub_id, ino));",
+        "CREATE TEMP TABLE presence_seen (sub_id BLOB NOT NULL, ino INTEGER NOT NULL, PRIMARY KEY (sub_id, ino));
+         CREATE TEMP TABLE presence_session (root_id INTEGER NOT NULL);",
     )?;
+    conn.execute("INSERT INTO temp.presence_session (root_id) VALUES (?1)", [root_id])?;
+    Ok(())
+}
+
+/// Bỏ phiên đang mở mà **không** đánh dấu gì (spec 5.10, nhánh bị cắt giữa chừng).
+pub fn presence_abort(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch(BO_BANG_PHIEN)?;
     Ok(())
 }
 
@@ -179,7 +204,7 @@ pub fn presence_seen(
     seen: &[(FileKey, Fingerprint, FileLoc)],
     now: Ts,
 ) -> Result<u64, DbError> {
-    if !seen_table_exists(conn)? {
+    if phien_root(conn)?.is_none() {
         return Err(DbError::Constraint("presence_seen trước presence_begin".to_owned()));
     }
     let tx = conn.unchecked_transaction()?;
@@ -228,25 +253,21 @@ pub fn presence_seen(
     Ok(restored)
 }
 
-pub fn presence_finish(
-    conn: &Connection,
-    root_id: i64,
-    scan_id: Ts,
-    retention_ms: i64,
-) -> Result<(u64, u64), DbError> {
-    if !seen_table_exists(conn)? {
-        return Err(DbError::Constraint("presence_finish trước presence_begin".to_owned()));
+/// Đóng phiên: row không thấy → `missing`. Xem `Repository::presence_finish`.
+pub fn presence_finish(conn: &Connection, root_id: i64, scan_id: Ts) -> Result<u64, DbError> {
+    // Sai root thì **không** bỏ bảng tạm: nuốt tập `seen` của lượt đang chạy còn
+    // tệ hơn báo lỗi, vì cả lượt quét mất trắng mà không ai biết.
+    match phien_root(conn)? {
+        None => return Err(DbError::Constraint("presence_finish trước presence_begin".to_owned())),
+        Some(cu) if cu != root_id => {
+            return Err(DbError::Constraint(format!(
+                "presence_finish(root {root_id}) nhưng phiên đang mở cho root {cu}"
+            )))
+        }
+        Some(_) => {}
     }
     let tx = conn.unchecked_transaction()?;
     let not_seen = "NOT EXISTS (SELECT 1 FROM temp.presence_seen s WHERE s.sub_id = files.sub_id AND s.ino = files.ino)";
-    // Row đã missing từ lâu → gone. Làm TRƯỚC để row vừa bị đánh missing (updated_at = scan_id) không bị đụng.
-    let to_gone = tx.execute(
-        &format!(
-            "UPDATE files SET state = 'gone', updated_at = :scan
-             WHERE root_id = :root AND state = 'missing' AND updated_at < :cutoff AND {not_seen}"
-        ),
-        named_params! { ":scan": scan_id, ":root": root_id, ":cutoff": scan_id.saturating_sub(retention_ms) },
-    )?;
     // Row còn sống nhưng không thấy, và không được cập nhật trong lúc walk (bản chốt mục 6).
     let to_missing = tx.execute(
         &format!(
@@ -256,7 +277,22 @@ pub fn presence_finish(
         ),
         named_params! { ":scan": scan_id, ":root": root_id },
     )?;
-    tx.execute_batch("DROP TABLE IF EXISTS temp.presence_seen;")?;
+    tx.execute_batch(BO_BANG_PHIEN)?;
     tx.commit()?;
-    Ok((to_missing as u64, to_gone as u64))
+    Ok(to_missing as u64)
+}
+
+/// `missing` cũ hơn `cutoff` → `gone`. Xem `Repository::presence_expire`.
+pub fn presence_expire(
+    conn: &Connection,
+    root_id: i64,
+    cutoff: Ts,
+    now: Ts,
+) -> Result<u64, DbError> {
+    let n = conn.execute(
+        "UPDATE files SET state = 'gone', updated_at = :now
+         WHERE root_id = :root AND state = 'missing' AND updated_at < :cutoff",
+        named_params! { ":now": now, ":root": root_id, ":cutoff": cutoff },
+    )?;
+    Ok(n as u64)
 }

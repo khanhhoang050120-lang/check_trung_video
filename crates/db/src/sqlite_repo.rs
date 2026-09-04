@@ -164,8 +164,12 @@ impl Repository for SqliteRepo {
         Ok(watch::restore_or_reset(&self.conn, key, id, now)?)
     }
 
-    fn presence_begin(&self) -> Result<(), RepoError> {
-        Ok(watch::presence_begin(&self.conn)?)
+    fn presence_begin(&self, root_id: i64) -> Result<(), RepoError> {
+        Ok(watch::presence_begin(&self.conn, root_id)?)
+    }
+
+    fn presence_abort(&self) -> Result<(), RepoError> {
+        Ok(watch::presence_abort(&self.conn)?)
     }
 
     fn presence_seen(
@@ -176,13 +180,12 @@ impl Repository for SqliteRepo {
         Ok(watch::presence_seen(&self.conn, seen, now)?)
     }
 
-    fn presence_finish(
-        &self,
-        root_id: i64,
-        scan_id: Ts,
-        retention_ms: i64,
-    ) -> Result<(u64, u64), RepoError> {
-        Ok(watch::presence_finish(&self.conn, root_id, scan_id, retention_ms)?)
+    fn presence_finish(&self, root_id: i64, scan_id: Ts) -> Result<u64, RepoError> {
+        Ok(watch::presence_finish(&self.conn, root_id, scan_id)?)
+    }
+
+    fn presence_expire(&self, root_id: i64, cutoff: Ts, now: Ts) -> Result<u64, RepoError> {
+        Ok(watch::presence_expire(&self.conn, root_id, cutoff, now)?)
     }
 
     fn journal_begin(&self, j: &JournalRow) -> Result<i64, RepoError> {
@@ -217,6 +220,10 @@ impl Repository for SqliteRepo {
 
     fn root_list(&self) -> Result<Vec<Root>, RepoError> {
         Ok(store::root_list(&self.conn)?)
+    }
+
+    fn file_count(&self, root_id: i64) -> Result<u64, RepoError> {
+        Ok(lookup::file_count(&self.conn, root_id)?)
     }
 
     fn scan_progress_get(&self, root_id: i64) -> Result<Option<ScanProgress>, RepoError> {

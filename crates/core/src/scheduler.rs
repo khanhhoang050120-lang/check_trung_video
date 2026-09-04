@@ -59,6 +59,16 @@ const CHU_KY_DON_DEP_MS: i64 = 24 * 3_600_000; // mỗi ngày
 /// ngoài khung thì **không** xuất hiện trong kết quả — chúng chờ lượt sau chứ không
 /// bị bỏ mất, vì `LanCuoi` không đổi.
 ///
+/// `can_quet_lai` = `meta.rescan_needed == "1"`: watcher đã mất sự kiện (inotify
+/// overflow, `max_user_watches`, channel đầy), nên DB có thể đang thiếu thay đổi
+/// mà không ai biết. Delta reconcile phải chạy **ngay**, không đợi hết chu kỳ 6 giờ
+/// (spec 5.10) — sáu giờ dữ liệu sai là sáu giờ báo cáo sai và có thể là sáu giờ bỏ
+/// sót bản trùng.
+///
+/// Cờ này **chỉ** kích `Reconcile`. Presence scan đọc metadata của mọi file trong
+/// thư viện; biến nó thành phản ứng tức thời với một cờ do sự kiện bên ngoài bật
+/// thì một watcher hay overflow sẽ kéo cả thư viện đi quét lại liên tục.
+///
 /// Kết quả sắp theo thứ tự `Viec` để hai lần gọi cùng đầu vào cho cùng đầu ra.
 #[must_use]
 pub fn den_han(
@@ -67,6 +77,7 @@ pub fn den_han(
     now: Ts,
     trong_khung_nang: bool,
     diskstats_interval_ms: i64,
+    can_quet_lai: bool,
 ) -> Vec<Viec> {
     let toi_han = |lan: Option<Ts>, chu_ky: i64| -> bool {
         // Chưa bao giờ chạy thì tới hạn ngay: đây là lần khởi động đầu tiên.
@@ -83,7 +94,7 @@ pub fn den_han(
     if toi_han(lan_cuoi.don_dep, CHU_KY_DON_DEP_MS) {
         out.push(Viec::DonDep);
     }
-    if toi_han(lan_cuoi.reconcile, t.reconcile_interval.0) {
+    if can_quet_lai || toi_han(lan_cuoi.reconcile, t.reconcile_interval.0) {
         out.push(Viec::Reconcile);
     }
     if toi_han(lan_cuoi.presence, t.presence_interval.0) {
@@ -147,7 +158,7 @@ mod tests {
     #[test]
     fn lan_dau_khoi_dong_thi_moi_viec_deu_toi_han() {
         // `LanCuoi::default()` = chưa bao giờ chạy.
-        let v = den_han(&timing(), &LanCuoi::default(), NOW, true, MAU_MS);
+        let v = den_han(&timing(), &LanCuoi::default(), NOW, true, MAU_MS, false);
         assert!(v.contains(&Viec::LayMauTai));
         assert!(v.contains(&Viec::Checkpoint));
         assert!(v.contains(&Viec::DonDep));
@@ -158,14 +169,14 @@ mod tests {
 
     #[test]
     fn vua_chay_xong_thi_khong_lam_lai() {
-        let v = den_han(&timing(), &vua_chay(), NOW, true, MAU_MS);
+        let v = den_han(&timing(), &vua_chay(), NOW, true, MAU_MS, false);
         assert!(v.is_empty(), "{v:?}");
     }
 
     #[test]
     fn viec_can_khung_nang_bi_giu_lai_khi_ngoai_khung() {
         // Presence scan đọc metadata mọi file trong thư viện: phải đợi khung giờ.
-        let v = den_han(&timing(), &LanCuoi::default(), NOW, false, MAU_MS);
+        let v = den_han(&timing(), &LanCuoi::default(), NOW, false, MAU_MS, false);
         assert!(!v.contains(&Viec::Presence), "presence phải chờ khung giờ");
         assert!(v.contains(&Viec::Reconcile), "reconcile chỉ đụng phần mới đổi");
         assert!(v.contains(&Viec::LayMauTai), "lấy mẫu tải luôn phải chạy");
@@ -176,8 +187,8 @@ mod tests {
         // Ngoài khung: presence không xuất hiện. Vào khung: nó vẫn còn đó, vì
         // `LanCuoi` không đổi khi việc bị giữ lại.
         let lc = LanCuoi::default();
-        assert!(!den_han(&timing(), &lc, NOW, false, MAU_MS).contains(&Viec::Presence));
-        assert!(den_han(&timing(), &lc, NOW, true, MAU_MS).contains(&Viec::Presence));
+        assert!(!den_han(&timing(), &lc, NOW, false, MAU_MS, false).contains(&Viec::Presence));
+        assert!(den_han(&timing(), &lc, NOW, true, MAU_MS, false).contains(&Viec::Presence));
     }
 
     #[test]
@@ -185,10 +196,16 @@ mod tests {
         let t = timing();
         let mut lc = vua_chay();
         lc.reconcile = Some(NOW - t.reconcile_interval.0 + 1);
-        assert!(!den_han(&t, &lc, NOW, true, MAU_MS).contains(&Viec::Reconcile), "còn 1 ms nữa");
+        assert!(
+            !den_han(&t, &lc, NOW, true, MAU_MS, false).contains(&Viec::Reconcile),
+            "còn 1 ms nữa"
+        );
 
         lc.reconcile = Some(NOW - t.reconcile_interval.0);
-        assert!(den_han(&t, &lc, NOW, true, MAU_MS).contains(&Viec::Reconcile), "đúng chu kỳ");
+        assert!(
+            den_han(&t, &lc, NOW, true, MAU_MS, false).contains(&Viec::Reconcile),
+            "đúng chu kỳ"
+        );
     }
 
     #[test]
@@ -197,16 +214,42 @@ mod tests {
         let mut lc = vua_chay();
         lc.checkpoint = Some(NOW - CHU_KY_CHECKPOINT_MS);
         lc.don_dep = Some(NOW - CHU_KY_CHECKPOINT_MS);
-        let v = den_han(&t, &lc, NOW, true, MAU_MS);
+        let v = den_han(&t, &lc, NOW, true, MAU_MS, false);
         assert!(v.contains(&Viec::Checkpoint));
         assert!(!v.contains(&Viec::DonDep), "dọn dẹp mỗi ngày, một giờ chưa tới lượt");
     }
 
     #[test]
+    fn co_quet_lai_kich_reconcile_ngoai_chu_ky() {
+        // Watcher mất sự kiện: DB có thể đang thiếu thay đổi, sáu giờ nữa mới biết
+        // là quá muộn (spec 5.10).
+        let t = timing();
+        let lc = vua_chay();
+        assert!(!den_han(&t, &lc, NOW, true, MAU_MS, false).contains(&Viec::Reconcile));
+        assert!(den_han(&t, &lc, NOW, true, MAU_MS, true).contains(&Viec::Reconcile));
+    }
+
+    #[test]
+    fn co_quet_lai_khong_kich_viec_khac() {
+        // Chỉ reconcile. Presence đọc metadata cả thư viện; để một cờ bên ngoài kích
+        // được nó thì một watcher hay overflow sẽ kéo cả thư viện quét lại liên tục.
+        let v = den_han(&timing(), &vua_chay(), NOW, true, MAU_MS, true);
+        assert_eq!(v, vec![Viec::Reconcile], "{v:?}");
+    }
+
+    #[test]
+    fn co_quet_lai_khong_lam_reconcile_xuat_hien_hai_lan() {
+        // Vừa tới hạn theo chu kỳ vừa có cờ: vẫn đúng một mục, nếu không vòng
+        // scheduler sẽ chạy reconcile hai lượt liền.
+        let v = den_han(&timing(), &LanCuoi::default(), NOW, true, MAU_MS, true);
+        assert_eq!(v.iter().filter(|x| **x == Viec::Reconcile).count(), 1, "{v:?}");
+    }
+
+    #[test]
     fn ket_qua_on_dinh_giua_hai_lan_goi() {
         let t = timing();
-        let a = den_han(&t, &LanCuoi::default(), NOW, true, MAU_MS);
-        let b = den_han(&t, &LanCuoi::default(), NOW, true, MAU_MS);
+        let a = den_han(&t, &LanCuoi::default(), NOW, true, MAU_MS, false);
+        let b = den_han(&t, &LanCuoi::default(), NOW, true, MAU_MS, false);
         assert_eq!(a, b, "cùng đầu vào phải cho cùng đầu ra, kể cả thứ tự");
     }
 

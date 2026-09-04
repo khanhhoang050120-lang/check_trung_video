@@ -246,12 +246,16 @@ pub fn vong_scheduler(
         let now = bay_gio();
         let trong_khung =
             window::tra(&cfg.timing.heavy_windows, &cfg.timing.timezone, now).trong_khung;
+        // `can_quet_lai` = false: cờ `meta.rescan_needed` do watcher bật, mà watcher
+        // thuộc Phase 4. Nối cờ vào đây trước khi có nhánh `Reconcile` thật chỉ làm
+        // vòng lặp đánh dấu "đã reconcile" mỗi lượt trong khi không quét gì.
         let viecs = scheduler::den_han(
             &cfg.timing,
             &lan_cuoi,
             now,
             trong_khung,
             cfg.io.diskstats_interval.0,
+            false,
         );
 
         for v in viecs {
