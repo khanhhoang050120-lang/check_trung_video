@@ -1,6 +1,8 @@
 //! Hàng đợi trong bộ nhớ (spec 4.3), dùng chung quy tắc ở `repo::rules`.
 
-use crate::model::{FileLoc, FileRecord, Identity, Ts};
+use std::collections::HashSet;
+
+use crate::model::{FileKey, FileLoc, FileRecord, Identity, Ts};
 use crate::repo::rules::{apply_upsert, decide_upsert, is_ready, new_row};
 use crate::repo::{RepoError, ScanRow, UpsertResult};
 
@@ -54,9 +56,24 @@ pub fn scan_insert(s: &mut Store, rows: &[ScanRow], now: Ts) -> Result<u64, Repo
         s.root_kind(r.loc.root_id)?;
     }
 
+    // Bảng tra dựng **một lần cho cả lô**, không phải quét lại `files` cho từng row.
+    //
+    // Bản cũ là `s.files.values().any(...)` bên trong vòng lặp, tức O(số row × số
+    // file đã có) — bậc hai. Nó không lộ ra ở test đơn vị vài chục row, nhưng ở test
+    // presence 100 000 file thì `pha_a` một mình ăn hàng trăm giây và tiêu chí "100k
+    // dưới 10 phút" của Phase 4 trượt. Đo được: 2 000 → 159 ms, 4 000 → 633 ms,
+    // 8 000 → 2 592 ms; gấp đôi đầu vào thì gấp bốn thời gian.
+    //
+    // Dựng tại chỗ rồi bỏ đi, **không** giữ làm trường của `Store`: một index sống
+    // lâu phải được đồng bộ ở mọi chỗ chạm `files`, và một chỗ quên đồng bộ là hai
+    // bản cài đặt `Repository` lệch nhau lần thứ năm.
+    let mut da_co: HashSet<FileKey> = s.files.values().map(|f| f.key).collect();
+
     let mut n = 0;
     for r in rows {
-        if s.files.values().any(|f| f.key == r.id.key) {
+        // `insert` trả `false` khi khóa đã có: vừa tra vừa ghi nhận cho row sau
+        // trong **cùng** lô, đúng như `ON CONFLICT DO NOTHING` của bản SQLite.
+        if !da_co.insert(r.id.key) {
             continue;
         }
         let nid = s.alloc_id();
@@ -118,4 +135,83 @@ pub fn pending_counts(s: &Store) -> (u64, Vec<(u32, u64)>) {
         }
     }
     (total, per_uid.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{DomainId, FileKey, Root, RootKind, State, SubId};
+    use crate::repo::{MemoryRepository, Repository};
+    use std::time::Instant;
+
+    fn kho(n: u64) -> (MemoryRepository, Vec<ScanRow>) {
+        let r = MemoryRepository::new();
+        r.root_upsert(
+            &Root {
+                id: 1,
+                path: "/r".into(),
+                domain_id: DomainId::default(),
+                kind: RootKind::Local,
+                label: None,
+                windows_unc: None,
+                active: true,
+                added_at: 0,
+            },
+            0,
+        )
+        .expect("đăng ký root");
+        let rows = (0..n)
+            .map(|i| ScanRow {
+                id: Identity {
+                    key: FileKey { sub_id: SubId::default(), ino: i + 1 },
+                    domain_id: DomainId::default(),
+                    size: 1024,
+                    mtime_ns: 0,
+                    ctime_ns: 0,
+                    atime_ns: 0,
+                    nlink: 1,
+                    uid: 0,
+                    mode: 0o100_644,
+                    blocks: 1,
+                    dev: 1,
+                },
+                loc: FileLoc::new(1, format!("d/{i}.mp4")),
+                state: State::Sized,
+                ready_at: None,
+                priority: 2,
+            })
+            .collect();
+        (r, rows)
+    }
+
+    /// `scan_insert` phải tuyến tính theo số row, không phải bậc hai.
+    ///
+    /// Bản trước gọi `s.files.values().any(...)` cho **từng** row, tức
+    /// O(số row × số file đã có). Không test đơn vị nào thấy — chúng chỉ dựng vài
+    /// chục row. Thứ thấy được là test `presence_lon` với 100 000 file, và ở đó nó
+    /// làm tiêu chí hoàn thành "100k dưới 10 phút" của Phase 4 **trượt** (625 giây).
+    ///
+    /// Đo tỷ lệ chứ không đo mốc tuyệt đối: máy CI dùng chung nên mốc tuyệt đối sẽ
+    /// nhấp nháy, còn "gấp đôi đầu vào tốn quá 3 lần thời gian" thì chỉ bậc hai mới
+    /// vi phạm được. Ngưỡng 3 (không phải 2) là chỗ chừa cho nhiễu; bậc hai cho tỷ
+    /// lệ 4 và bản cũ đo được 159 ms → 633 ms → 2 592 ms, tức đúng 4.
+    #[test]
+    fn scan_insert_tuyen_tinh_chu_khong_phai_bac_hai() {
+        let do_lan = |n: u64| {
+            let (r, rows) = kho(n);
+            let t = Instant::now();
+            r.scan_insert(&rows, 0).expect("chèn");
+            t.elapsed()
+        };
+        // Chạy một lượt bỏ đi để CPU khỏi còn ở trạng thái tiết kiệm điện.
+        let _ = do_lan(2_000);
+        let nho = do_lan(4_000);
+        let lon = do_lan(8_000);
+        let ty_le = lon.as_secs_f64() / nho.as_secs_f64().max(1e-6);
+        assert!(
+            ty_le < 3.0,
+            "gấp đôi số row tốn gấp {ty_le:.1} lần thời gian ({nho:?} → {lon:?}): \
+             `scan_insert` đã quay lại quét tuyến tính `files` cho từng row"
+        );
+    }
 }

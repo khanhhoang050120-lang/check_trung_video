@@ -4,6 +4,56 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-020 — `MemoryRepository` bậc hai, làm trượt tiêu chí "presence 100k dưới 10 phút"
+
+**Ngày:** 2026-09-04 · **Phase:** 4 · **Nơi:** `crates/core/src/repo/memory/{queue,watch}.rs`
+
+**Triệu chứng.** Nhóm việc CI `presence` đỏ ngay lần chạy đầu tiên — tức lần đầu tiêu chí
+này được **đo**:
+
+```text
+presence scan 100000 file mất 624.964198301s, quá hạn 600s của spec
+```
+
+**Nguyên nhân gốc.** Không phải `walk::Presence`, không phải syscall, không phải nhịp
+thư mục (test đã đặt `dir_moi_giay = 100_000` để vô hiệu hóa nó). Là `MemoryRepository`:
+nó không có index theo `FileKey`, nên hai hàm nóng quét tuyến tính **toàn bộ** `files`
+cho **từng** entry.
+
+| Nơi | Dòng cũ | Độ phức tạp |
+| :--- | :--- | :--- |
+| `queue::scan_insert` | `s.files.values().any(|f| f.key == r.id.key)` | O(số row × số file) |
+| `watch::presence_seen_in_tx` | `s.files.values().any(|r| r.key == *key && ...)` | O(số entry × số file) |
+
+**Đo được** (trên Windows, trước khi sửa): 2 000 → 159 ms, 4 000 → 633 ms,
+8 000 → 2 592 ms. Gấp đôi đầu vào thì gấp bốn thời gian — bậc hai không cãi được.
+Ngoại suy tới 100 000 cho ~400 giây, khớp với 625 giây đo trên CI.
+
+**Cách sửa.** Dựng bảng tra **một lần cho cả lô** rồi bỏ đi, thay vì quét lại cho từng
+entry. **Không** thêm index làm trường của `Store`: một index sống lâu phải được đồng bộ
+ở mọi chỗ chạm `files`, và một chỗ quên đồng bộ là hai bản cài đặt `Repository` lệch nhau
+lần thứ năm. Kết quả sau khi sửa: 8 000 entry từ 2 592 ms xuống **17,8 ms** (nhanh 145 lần).
+
+**Đã kiểm chứng.** 565 test tương thích vẫn xanh trên cả ba bản cài đặt. Thêm
+`scan_insert_tuyen_tinh_chu_khong_phai_bac_hai` đo **tỷ lệ** (gấp đôi đầu vào phải tốn
+dưới 3 lần thời gian) chứ không đo mốc tuyệt đối — mốc tuyệt đối nhấp nháy trên máy CI
+dùng chung, còn tỷ lệ thì chỉ bậc hai mới vi phạm được. Hoàn tác bản sửa → test đỏ với
+"gấp 4.1 lần"; khôi phục → xanh.
+
+**Bài học.**
+
+1. **Bậc hai ẩn được sau mọi test đơn vị.** 565 test tương thích đều dựng vài chục row,
+   nên chúng đúng về hành vi và mù về độ phức tạp. Chỉ một test **ở quy mô thật** mới thấy.
+2. **Tiêu chí hiệu năng phải có runner, không chỉ có file test.** `presence_lon.rs` tồn
+   tại từ Gói D nhưng không bước CI nào gọi nó (ISSUE-011). Nếu không thêm nhóm việc
+   `presence`, tiêu chí này đã được tích xanh dựa trên sự **tồn tại** của một file test không
+   bao giờ chạy — đúng khuôn BUG-019.
+3. **Đo trước, sửa sau.** Nghi ngờ đầu tiên của tôi là `statx` và bản vá chụp-và-hoàn-tác
+   ở Gói 0; cả hai đều sai. Một phép đo 20 dòng chạy được trên **Windows** đã chỉ đúng chỗ
+   trong vài phút.
+
+---
+
 ## BUG-019 — Con trỏ quét được đọc nhưng chưa bao giờ được ghi
 
 **Ngày:** 2026-09-04 · **Phase:** 3 (lộ ra khi khảo sát Phase 4) · **Nơi:** `crates/linux/src/daemon.rs`

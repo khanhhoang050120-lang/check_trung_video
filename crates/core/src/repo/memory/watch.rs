@@ -1,5 +1,7 @@
 //! Cập nhật từ watcher và reconcile/presence scan (spec 5.9, 5.10).
 
+use std::collections::HashSet;
+
 use crate::model::{FileKey, FileLoc, FileRecord, Fingerprint, Identity, State, Ts};
 use crate::repo::rules::{apply_upsert, decide_upsert};
 use crate::repo::RepoError;
@@ -161,6 +163,16 @@ fn presence_seen_in_tx(
     seen: &[(FileKey, Fingerprint, FileLoc)],
     now: Ts,
 ) -> Result<u64, RepoError> {
+    // Cùng lý do như `scan_insert`: tra `Missing` bằng bảng dựng một lần cho cả lô
+    // thay vì `s.files.values().any(...)` cho từng entry. Bản cũ là bậc hai và làm
+    // presence scan 100 000 file mất 625 giây — trượt tiêu chí 10 phút của Phase 4.
+    //
+    // Chỉ chứa row `Missing`, tức gần như rỗng ở lượt quét bình thường. Phải cập
+    // nhật khi một row được phục hồi bên dưới, nếu không hai entry trùng khóa trong
+    // cùng lô sẽ phục hồi hai lần và `restored` đếm dư so với bản SQLite.
+    let mut dang_missing: HashSet<FileKey> =
+        s.files.values().filter(|r| r.state == State::Missing).map(|r| r.key).collect();
+
     let mut restored = 0;
     for (key, fp, loc) in seen {
         if let Some(p) = s.phien.as_mut() {
@@ -170,8 +182,7 @@ fn presence_seen_in_tx(
         // SQLite chỉ chạm bảng `roots` khi thật sự cần so fingerprint, nên một entry
         // trỏ vào root lạ chỉ là vô hại ở đó. Tra sớm sẽ làm cả lô đổ vỡ ở một bản
         // mà không ở bản kia.
-        let can_khoi_phuc = s.files.values().any(|r| r.key == *key && r.state == State::Missing);
-        if !can_khoi_phuc {
+        if !dang_missing.remove(key) {
             continue;
         }
         let kind = s.root_kind(loc.root_id)?;
