@@ -7,6 +7,7 @@ Daemon Rust phát hiện video trùng lặp trên NAS và gộp dung lượng v�
 | Tài liệu | Nội dung |
 | :--- | :--- |
 | [Hướng dẫn triển khai](docs/TRIEN-KHAI.md) | Đưa daemon lên NAS và chạy thử ở chế độ chỉ báo cáo |
+| [Đề nghị cấp quyền](docs/YEU-CAU-QUYEN.md) | Bản nháp xin phép chạy thử, nói rõ phần mềm đọc gì và ghi gì |
 | [Bản đặc tả kỹ thuật](BẢN%20ĐẶC%20TẢ%20KỸ%20THUẬT%20(PRD%20%26%20TECHNICAL%20SPEC).md) | Phần lõi dedup: thuật toán, schema, state machine, kế hoạch 7 phase |
 | [Thiết kế giao diện và phát hành](docs/design/) | UI/UX, API điều khiển, cập nhật tự động, CI/CD |
 | [Sổ tay kỹ thuật](docs/notes/) | Lỗi đã gặp, quyết định kiến trúc, rủi ro, danh sách kiểm tra |

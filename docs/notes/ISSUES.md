@@ -18,6 +18,15 @@ Chưa làm, cố ý để lại:
   NAS thật và đo `iostat`. Kịch bản `scripts/do-soak.sh` đã sẵn sàng; bảng số liệu
   trong `PERF.md` còn trống. **Phase 3 chưa được coi là xong cho tới khi có số liệu
   này.**
+
+  **Đang bị chặn vì lý do tổ chức, không phải kỹ thuật** (2026-09-04): người phát
+  triển không có quyền quản trị trên NAS 192.168.1.213 lẫn máy Windows 192.168.1.214;
+  quyền đó thuộc về cấp trên. Đã soạn `docs/YEU-CAU-QUYEN.md` để xin phép.
+
+  Trong sáu tiêu chí hoàn thành, chỉ **một** thật sự cần NAS (chạy ≥ 3 ngày với dữ
+  liệu thật ở quy mô thật). Năm tiêu chí còn lại đo được trên bất kỳ máy Linux nào,
+  và ba trong số đó viết thành test CI được — xem `docs/KIEM-CHUNG-KHONG-CAN-NAS.md`.
+  Không tìm cách vòng qua kiểm soát truy cập.
 - **Probe backend** (`volumes.backend` vẫn là chưa probe): thuộc Phase 5, vì Phase 3
   cố ý chỉ chạy `DryRunDeduper`.
 - **`nasdedup explain <path>`** và **`verify <path>`**: cần FIEMAP, thuộc Phase 5.
