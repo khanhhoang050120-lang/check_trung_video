@@ -3,6 +3,45 @@
 Mỗi mục: quyết định gì, vì sao, đã loại phương án nào. Không xóa mục cũ; nếu đảo ngược thì thêm mục mới trỏ ngược lại.
 
 ---
+## DEC-020 — Quyết định của scheduler tách khỏi vòng lặp của nó
+
+**Ngày:** 2026-09-04 · **Phase:** 3
+
+`core::scheduler::den_han(timing, lan_cuoi, now, trong_khung, ...) -> Vec<Viec>` là
+hàm thuần; thread thật chỉ gọi nó rồi thi hành. Tương tự `ngu_bao_lau`.
+
+**Vì sao.** Lịch trình sai theo kiểu "chạy quá thường xuyên" thì thấy ngay qua tải
+đĩa, nhưng sai theo kiểu "**không bao giờ** chạy" thì hoàn toàn im lặng — không lỗi,
+không log, chỉ là dữ liệu cũ dần cho tới khi người dùng phát hiện báo cáo thiếu. Ở
+dạng thuần, một test khẳng định "presence bị giữ lại ngoài khung giờ nhưng **không
+bị mất**" chạy trong micro-giây thay vì phải chờ bảy ngày.
+
+Cùng lý do với `core::busy` (trễ hai chiều) và `core::window` (khung giờ): mọi thứ
+phụ thuộc thời gian đều nhận `now` làm tham số, không tự xem đồng hồ.
+
+---
+
+## DEC-019 — `scan_insert` là thao tác hàng loạt, và cố ý bỏ qua row đã có
+
+**Ngày:** 2026-09-04 · **Phase:** 3
+
+Initial scan không dùng `upsert_pending` mà dùng `scan_insert(&[ScanRow], now)`.
+
+**Vì sao không dùng `upsert_pending`.** Câu upsert của spec 4.3 **luôn** chèn
+`settling`. Nhưng pha A cần đặt thẳng `sized` cho file đã đủ già — nếu không, mỗi
+file trong thư viện tốn thêm một vòng `next_ready` + `apply` chỉ để đi qua một bước
+không làm gì. Với 200 000 file đó là 200 000 vòng thừa.
+
+**Vì sao bỏ qua row đã có.** Chạy `nasdedup scan` lần hai trên thư viện đang xử lý dở
+không được đặt lại tiến độ. Phát hiện thay đổi là việc của delta reconcile, nơi có
+guard fingerprint của 4.3. `INSERT ... ON CONFLICT DO NOTHING` nói đúng điều đó và
+nói ở tầng SQL, nên không có đường nào lách qua.
+
+**Đánh đổi.** Trait có thêm một hàm mang ngữ nghĩa khác hẳn phần còn lại (hàng loạt,
+không guard). Đổi lại, initial scan của một thư viện lớn xong trong vài phút.
+
+---
+
 
 ## DEC-018 — `Deduper::shares_extents()` thay vì đoán qua `name()`
 

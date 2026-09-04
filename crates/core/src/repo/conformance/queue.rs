@@ -1,6 +1,6 @@
 //! Kịch bản tương thích cho hàng đợi (spec 4.3).
 
-use crate::model::State;
+use crate::model::{Identity, State};
 use crate::repo::types::{GroupOp, Patch, Transition};
 use crate::repo::Repository;
 
@@ -449,4 +449,77 @@ pub fn scan_insert_root_chua_dang_ky_bi_tu_choi(repo: &dyn Repository) {
     }];
     let e = repo.scan_insert(&rows, NOW);
     assert!(matches!(e, Err(crate::repo::RepoError::Constraint(_))), "{e:?}");
+}
+
+/// Pha B: chỉ đánh thức row có bạn cùng kích thước; phần còn lại thành `distinct`
+/// mà **không đọc một byte nào** (spec 5.10).
+pub fn scan_phase_b_chi_danh_thuc_row_co_ban_cung_kich_thuoc(repo: &dyn Repository) {
+    use crate::repo::ScanRow;
+
+    let sized = |id: Identity, rel: &str| ScanRow {
+        id,
+        loc: loc(rel),
+        state: State::Sized,
+        ready_at: None,
+        priority: 2,
+    };
+    // Hai file cùng 100 byte, một file 999 byte đứng riêng.
+    let a = ident(1, 100, 5, 5);
+    let b = ident(2, 100, 6, 6);
+    let c = ident(3, 999, 7, 7);
+    repo.scan_insert(&[sized(a, "a.mp4"), sized(b, "b.mp4"), sized(c, "c.mp4")], NOW).unwrap();
+
+    let (danh_thuc, rieng) = repo.scan_phase_b(1, NOW + 1).unwrap();
+    assert_eq!(danh_thuc, 2, "hai file cùng kích thước phải vào hàng đợi");
+    assert_eq!(rieng, 1, "file kích thước duy nhất khỏi phải đọc");
+
+    assert_eq!(get(repo, &a.key).ready_at, Some(NOW + 1));
+    assert_eq!(get(repo, &b.key).ready_at, Some(NOW + 1));
+    let rc = get(repo, &c.key);
+    assert_eq!(rc.state, State::Distinct);
+    assert_eq!(rc.ready_at, None, "distinct thì không còn việc gì");
+    assert_eq!(rc.sparse_hash, None, "và chưa bao giờ bị đọc để hash");
+}
+
+/// Pha B không đụng row đã ở trong hàng đợi, và chỉ làm việc trên root được chỉ định.
+pub fn scan_phase_b_khong_dung_row_dang_cho_va_root_khac(repo: &dyn Repository) {
+    use crate::repo::ScanRow;
+
+    // Row đang chờ xử lý (có `ready_at`) không được đụng tới.
+    let dang_cho = ident(1, 100, 5, 5);
+    repo.scan_insert(
+        &[ScanRow {
+            id: dang_cho,
+            loc: loc("dang-cho.mp4"),
+            state: State::Sized,
+            ready_at: Some(NOW),
+            priority: 2,
+        }],
+        NOW,
+    )
+    .unwrap();
+
+    // Row ở root khác (remote) cùng kích thước, chưa xếp hàng.
+    let root_khac = ident(2, 100, 6, 6);
+    repo.scan_insert(
+        &[ScanRow {
+            id: root_khac,
+            loc: rloc("tren-remote.mp4"),
+            state: State::Sized,
+            ready_at: None,
+            priority: 2,
+        }],
+        NOW,
+    )
+    .unwrap();
+
+    let (danh_thuc, rieng) = repo.scan_phase_b(1, NOW + 1).unwrap();
+    assert_eq!((danh_thuc, rieng), (0, 0), "root 1 không còn row nào chưa xếp hàng");
+    assert_eq!(get(repo, &dang_cho.key).ready_at, Some(NOW), "row đang chờ giữ nguyên hẹn");
+    assert_eq!(get(repo, &root_khac.key).state, State::Sized, "root 2 chưa tới lượt");
+
+    // Chạy pha B cho root 2: file của nó có bạn cùng kích thước ở root 1.
+    let (danh_thuc, rieng) = repo.scan_phase_b(2, NOW + 2).unwrap();
+    assert_eq!(danh_thuc, 1, "bản trùng có thể nằm ở root khác cùng filesystem");
+    assert_eq!(rieng, 0);
 }

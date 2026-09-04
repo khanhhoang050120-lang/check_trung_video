@@ -32,6 +32,7 @@ pub mod pipeline;
 pub mod recovery;
 pub mod repo;
 pub mod scan;
+pub mod scheduler;
 pub mod state;
 pub mod throttle;
 pub mod window;

@@ -40,6 +40,10 @@ impl Repository for DbHandle {
         forward!(self, |r| r.scan_insert(&rows, now))
     }
 
+    fn scan_phase_b(&self, root_id: i64, now: Ts) -> Result<(u64, u64), RepoError> {
+        forward!(self, |r| r.scan_phase_b(root_id, now))
+    }
+
     fn next_ready(
         &self,
         now: Ts,

@@ -258,6 +258,36 @@ pub fn scan_insert(conn: &Connection, rows: &[ScanRow], now: Ts) -> Result<u64, 
     Ok(n)
 }
 
+/// Pha B của initial scan (spec 5.10): đánh thức row có bạn cùng kích thước.
+///
+/// Hai câu `UPDATE` trong **một** transaction, và thứ tự quan trọng: câu đầu đánh
+/// thức, câu sau quét nốt phần còn lại thành `distinct`. Đảo lại thì mọi thứ thành
+/// `distinct` hết.
+///
+/// # Errors
+/// Lỗi SQLite.
+pub fn scan_phase_b(conn: &Connection, root_id: i64, now: Ts) -> Result<(u64, u64), DbError> {
+    let tx = conn.unchecked_transaction()?;
+    // Bản trùng có thể nằm ở root khác cùng filesystem, nên truy vấn con không lọc
+    // theo `root_id`. Row `missing`/`gone` không tính: chúng không còn trên đĩa.
+    let danh_thuc = tx.execute(
+        "UPDATE files SET ready_at = :now, updated_at = :now
+         WHERE root_id = :root AND state = 'sized' AND ready_at IS NULL
+           AND (domain_id, size) IN (
+               SELECT domain_id, size FROM files
+               WHERE state NOT IN ('missing','gone')
+               GROUP BY domain_id, size HAVING COUNT(*) > 1)",
+        named_params! { ":now": now, ":root": root_id },
+    )?;
+    let rieng = tx.execute(
+        "UPDATE files SET state = 'distinct', updated_at = :now
+         WHERE root_id = :root AND state = 'sized' AND ready_at IS NULL",
+        named_params! { ":now": now, ":root": root_id },
+    )?;
+    tx.commit()?;
+    Ok((danh_thuc as u64, rieng as u64))
+}
+
 /// Lấy row tiếp theo đến hạn (spec 4.3).
 ///
 /// `allow_heavy = false` chỉ trả `settling` và `sized`: đó là các bước 0 I/O hoặc

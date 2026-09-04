@@ -79,6 +79,10 @@ impl Repository for SqliteRepo {
         Ok(queue::scan_insert(&self.conn, rows, now)?)
     }
 
+    fn scan_phase_b(&self, root_id: i64, now: Ts) -> Result<(u64, u64), RepoError> {
+        Ok(queue::scan_phase_b(&self.conn, root_id, now)?)
+    }
+
     fn next_ready(
         &self,
         now: Ts,

@@ -94,6 +94,22 @@ pub trait Repository {
     /// thì initial scan mất hàng giờ chỉ vì `fsync`.
     fn scan_insert(&self, rows: &[ScanRow], now: Ts) -> Result<u64, RepoError>;
 
+    /// Pha B của initial scan: đánh thức row có bạn cùng kích thước (spec 5.10).
+    ///
+    /// Sau pha A, mọi file đủ già nằm ở `sized` với `ready_at = NULL`. Pha B chia
+    /// chúng làm hai:
+    ///
+    /// - có ít nhất một file khác **cùng `(domain_id, size)`** → đánh thức
+    ///   (`ready_at = now`), vì chỉ những file này mới có cơ hội trùng nhau;
+    /// - còn lại → `distinct` ngay, **không đọc một byte nào**.
+    ///
+    /// Đây là chỗ tiết kiệm lớn nhất của cả hệ thống: một thư viện 200 000 file mà
+    /// phần lớn có kích thước duy nhất sẽ bỏ qua bước hash cho gần hết số đó.
+    /// Row `distinct` vẫn là ứng viên cho file tới sau (spec 5.4).
+    ///
+    /// Trả `(số row đánh thức, số row thành distinct)`.
+    fn scan_phase_b(&self, root_id: i64, now: Ts) -> Result<(u64, u64), RepoError>;
+
     fn next_ready(
         &self,
         now: Ts,

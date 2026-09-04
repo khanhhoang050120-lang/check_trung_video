@@ -60,6 +60,37 @@ pub fn scan_insert(s: &mut Store, rows: &[ScanRow], now: Ts) -> Result<u64, Repo
     Ok(n)
 }
 
+/// Pha B của initial scan (spec 5.10).
+pub fn scan_phase_b(s: &mut Store, root_id: i64, now: Ts) -> (u64, u64) {
+    use crate::model::State;
+    use std::collections::HashMap;
+
+    // Đếm theo `(domain_id, size)` trên **toàn bộ** kho, không chỉ trong root này:
+    // bản trùng có thể nằm ở root khác cùng filesystem.
+    let mut dem: HashMap<(crate::model::DomainId, u64), usize> = HashMap::new();
+    for r in s.files.values() {
+        if !matches!(r.state, State::Missing | State::Gone) {
+            *dem.entry((r.domain_id, r.size)).or_insert(0) += 1;
+        }
+    }
+
+    let (mut danh_thuc, mut rieng) = (0, 0);
+    for r in s.files.values_mut() {
+        if r.loc.root_id != root_id || r.state != State::Sized || r.ready_at.is_some() {
+            continue;
+        }
+        if dem.get(&(r.domain_id, r.size)).copied().unwrap_or(0) > 1 {
+            r.ready_at = Some(now);
+            danh_thuc += 1;
+        } else {
+            r.state = State::Distinct;
+            rieng += 1;
+        }
+        r.updated_at = now;
+    }
+    (danh_thuc, rieng)
+}
+
 pub fn next_ready(s: &Store, now: Ts, allow_heavy: bool, max_wait_ms: i64) -> Option<FileRecord> {
     s.files
         .values()

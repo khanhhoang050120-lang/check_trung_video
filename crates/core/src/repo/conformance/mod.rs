@@ -126,6 +126,8 @@ macro_rules! repository_conformance_tests {
             upsert_root_chua_dang_ky_bi_tu_choi,
             scan_insert_dat_thang_state_va_bo_qua_row_da_co,
             scan_insert_root_chua_dang_ky_bi_tu_choi,
+            scan_phase_b_chi_danh_thuc_row_co_ban_cung_kich_thuoc,
+            scan_phase_b_khong_dung_row_dang_cho_va_root_khac,
             next_ready_uu_tien_realtime,
             next_ready_khong_tra_row_chua_den_han,
             next_ready_ngoai_khung_gio_chi_settling_sized,

@@ -3,6 +3,21 @@
 Chỗ bản đặc tả mơ hồ, sai, hoặc lệch với code. Sửa được thì sửa thẳng vào spec rồi ghi lại ở đây.
 
 ---
+## SPEC-007 — Phase 3 thêm hai hàm vào `Repository`
+
+**Trạng thái:** đã hiện thực hóa, **spec cần cập nhật mục 3.3**
+
+| Thêm gì | Vì sao |
+| :--- | :--- |
+| `scan_insert(&[ScanRow], now) -> u64` | Spec 5.10 pha A nói `INSERT OR IGNORE` theo lô 5 000 row với state đặt sẵn (`sized` hoặc `settling`). `upsert_pending` **luôn** chèn `settling`, nên không dùng được. Xem DEC-019. |
+| `scan_phase_b(root_id, now) -> (u64, u64)` | Hai câu `UPDATE` của spec 5.10 pha B phải nằm trong một transaction và đúng thứ tự; để tầng trên tự ghép sẽ dễ đảo. |
+
+Cả hai đều là thao tác **hàng loạt**, khác hẳn phần còn lại của trait vốn làm việc
+trên từng row. Đó là chủ ý: initial scan xử lý 200 000 file, và một transaction cho
+mỗi file thì `fsync` chiếm hết thời gian.
+
+---
+
 ## SPEC-006 — Phase 2 thêm một hàm vào `Repository` và một hàm vào `Deduper`
 
 **Trạng thái:** đã hiện thực hóa, **spec cần cập nhật mục 3.3**
