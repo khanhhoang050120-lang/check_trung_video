@@ -4,6 +4,57 @@ Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc,
 
 ---
 
+## BUG-016 — Ba lỗi mà chỉ test trên filesystem thật mới phơi ra
+
+**Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/core/src/pipeline/`, `worker.rs`
+
+Test tích hợp đầu tiên chạy qua `LinuxFs` thật (thay vì `MemoryFs`) bắt được ba lỗi.
+Hai trong số đó là lỗi thật của sản phẩm, không phải lỗi của test.
+
+### 1. File từ initial scan không bao giờ được kiểm magic
+
+Bước ổn định (`settle`) kiểm magic, và bước backfill kiểm magic cho **ứng viên**.
+Nhưng row do initial scan tạo ra đi **thẳng** vào `sized` (spec 5.10 pha A), bỏ qua
+bước ổn định — và `sized::tinh_hash` không kiểm gì cả. Hệ quả: một file văn bản 4 GB
+đổi tên thành `.mp4` vẫn bị đọc và hash đầy đủ.
+
+Không sai về dữ liệu (hash chỉ là bộ lọc), nhưng trái spec 5.10 pha C và tốn I/O đúng
+vào thứ đắt nhất. Đã thêm kiểm magic vào `tinh_hash` khi `magic_ok IS NULL`.
+
+Vì sao `MemoryFs` không bắt được: các test cũ đều đưa file qua `settling` trước, nên
+`magic_ok` đã được đặt. Chỉ đường đi của initial scan mới bỏ sót, và đường đó chỉ
+xuất hiện khi có scanner thật.
+
+### 2. `Noop` với `ready_at` còn nguyên = worker quay vòng ngốn CPU
+
+`group::xep_cho` trả `StepOutcome::Noop` khi row đã là canonical của chính nhóm nó.
+Nhưng `worker::mot_vong` gặp `Noop` thì **không ghi gì**, nên `ready_at` giữ nguyên,
+`next_ready` trả lại đúng row đó ngay lượt sau, và vòng lặp chạy hết một lõi CPU mà
+không làm gì cả.
+
+Sửa hai tầng:
+
+- `xep_cho` trả transition đưa row về `Canonical` (đúng state của nó) thay vì `Noop`;
+- `worker` gặp `Noop` thì đẩy `ready_at` ra một phút. Đây là **bảo hiểm**: mọi
+  `Noop` trong tương lai cũng không thể sinh ra vòng lặp bận.
+
+### 3. (Lỗi của test) Khẳng định file nào thắng canonical
+
+`chon_canonical` chọn theo `mtime`, hòa thì `first_seen_at`, rồi `ino`. Hai file do
+test tạo cách nhau vài mili-giây có thể **cùng** mtime, và thứ tự inode thì phụ thuộc
+filesystem. Test cũ khẳng định `a.mp4` là canonical — đúng trên `MemoryFs` (nơi ino do
+test đặt) nhưng bấp bênh trên ext4/tmpfs thật.
+
+Sửa: khẳng định cặp đã tới đích và cùng nhóm, không khẳng định file nào thắng.
+
+**Bài học.** `MemoryFs` kiểm được logic, nhưng nó cũng **làm phẳng** những thứ mà
+filesystem thật không đảm bảo: thứ tự inode, độ phân giải mtime, và những đường đi mà
+chỉ scanner thật mới tạo ra. Một test tích hợp trên FS thật cho mỗi tầng syscall là
+bắt buộc, dù nó chỉ chạy được trên CI.
+
+---
+
+
 ## BUG-015 — Cùng một dòng code: "thừa" trên glibc, "bắt buộc" trên musl
 
 **Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/linux/src/{ioctl,fsdetect}.rs`

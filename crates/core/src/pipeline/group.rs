@@ -39,8 +39,17 @@ pub fn xep_cho(ctx: &StepCtx, rec: &FileRecord, h: [u8; 32]) -> Result<StepOutco
         match canonical {
             // Nhóm còn gốc sống: B vào nhóm, chờ verify với gốc đó (bước 5.7).
             Some(c) if !matches!(c.state, State::Missing | State::Gone) => {
+                // Row đã là gốc của chính nhóm này: đưa nó về đúng state thay vì
+                // `Noop`. Trả `Noop` mà vẫn để `ready_at` khiến `next_ready` lấy lại
+                // nó ngay lượt sau, và worker quay vòng mãi không làm gì.
                 if c.id == rec.id {
-                    return Ok(StepOutcome::Noop);
+                    return Ok(StepOutcome::apply(Transition::new(
+                        rec.id,
+                        State::Sized,
+                        State::Canonical,
+                        Patch::new().group_id(Some(g.id)).ready_at(None),
+                        ctx.now,
+                    )));
                 }
                 return Ok(StepOutcome::apply(Transition::new(
                     rec.id,

@@ -1,5 +1,30 @@
 # Số đo và giả định về hiệu năng
 
+## Cách đo cho Phase 3
+
+Kịch bản `scripts/do-soak.sh` chạy **trên chính máy NAS**, khi daemon đang chạy ở
+`mode = "report"`:
+
+```sh
+./scripts/do-soak.sh /etc/nasdedup/config.toml sda
+```
+
+Nó chỉ đọc: `/proc/diskstats`, `/proc/<pid>/io`, `iostat`, và các lệnh chỉ đọc của
+`nasdedup`. Kết quả ghi vào `soak-<ngày>/` để dán vào file này.
+
+Bốn tiêu chí kịch bản đo được, và hai tiêu chí phải thử tay (khởi động lại giữa
+initial scan, và root chứa subvolume Btrfs con) được liệt kê ở cuối phần in ra.
+
+**Chưa có số liệu thật.** Máy dev chạy Windows, và tiêu chí hoàn thành của Phase 3
+đòi ≥ 3 ngày chạy trên NAS thật (spec mục 11 bước 7). Bảng dưới đây để trống cho tới
+khi có lần đo đầu tiên.
+
+| Ngày | Phần cứng | read_rate cấu hình | rkB/s trung bình | Sai lệch | Nhường đường | Ghi chú |
+| :--- | :--- | ---: | ---: | ---: | :--- | :--- |
+| — | — | — | — | — | — | chưa đo |
+
+---
+
 Chỉ ghi số đo thật. Ước lượng phải ghi rõ là ước lượng.
 
 ---

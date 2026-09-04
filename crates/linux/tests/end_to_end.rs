@@ -159,18 +159,25 @@ fn file_kich_thuoc_duy_nhat_khong_bao_gio_bi_doc() {
 
 #[test]
 fn file_khong_phai_video_bi_loai_truoc_khi_doc_noi_dung() {
+    // Hai file **cùng kích thước** để pha B không kết luận `distinct` sớm; nhờ vậy
+    // pipeline đi tới bước kiểm magic. Một trong hai là văn bản đội lốt `.mp4`.
+    let n = 4096;
+    let mut gia = b"day khong phai video".to_vec();
+    gia.resize(n, b'x');
     let b = dung_ban(&[
-        ("that.mp4", mp4(4096, 1)),
-        ("gia.mp4", b"day khong phai video".to_vec()),
+        ("that.mp4", mp4(n, 1)),
+        ("gia.mp4", gia),
         ("ghi-chu.txt", b"van ban".to_vec()),
     ]);
     let kq = b.quet();
     assert_eq!(kq.da_loai, 1, "chỉ .txt bị pre-filter loại (0 I/O)");
     b.xu_ly();
 
-    // `.mp4` giả qua được pre-filter nhưng bị magic loại sau khi đọc 8 KiB.
-    assert_eq!(b.row("gia.mp4").state, State::Skipped);
+    // Row đến từ initial scan có `magic_ok = NULL` và đi thẳng vào `sized`, nên
+    // bước hash là chỗ duy nhất kiểm magic cho nó (spec 5.10 pha C).
+    assert_eq!(b.row("gia.mp4").state, State::Skipped, "văn bản đội lốt .mp4");
     assert_eq!(b.row("gia.mp4").skip_reason.as_deref(), Some("bad_magic"));
+    assert_eq!(b.row("gia.mp4").sparse_hash, None, "không được hash một file không phải video");
     assert!(b.repo.find_by_path(&FileLoc::new(1, "ghi-chu.txt")).unwrap().is_none());
 }
 
@@ -216,7 +223,14 @@ fn file_bi_ghi_de_giua_chung_thi_quay_lai_tu_dau() {
     b.xu_ly();
 
     let sau = b.row("a.mp4");
-    assert_ne!(sau.sparse_hash, truoc.sparse_hash, "hash cũ không được giữ lại");
+    // Điều bắt buộc là **kết luận** không được dựa trên hash cũ. Chỗ phát hiện có
+    // thể là bước hash hoặc bước verify tùy đường đi; test khẳng định kết quả chứ
+    // không khẳng định cơ chế.
+    assert_ne!(sau.state, State::Verified, "không được coi là giống nhau nữa");
+    assert_ne!(sau.state, State::Deduped);
+    if sau.sparse_hash.is_some() {
+        assert_ne!(sau.sparse_hash, truoc.sparse_hash, "nếu còn hash thì phải là hash mới");
+    }
     assert_eq!(sau.attempts, 0, "file bị ghi không phải lỗi của daemon");
 }
 
@@ -246,13 +260,21 @@ fn quet_lai_khong_dat_lai_tien_do_dang_co() {
     let b = dung_ban(&[("a.mp4", noi_dung.clone()), ("b.mp4", noi_dung)]);
     b.quet();
     b.xu_ly();
-    let truoc = b.row("a.mp4");
-    assert_eq!(truoc.state, State::Canonical);
+    let truoc = (b.row("a.mp4"), b.row("b.mp4"));
+    // Ai thành canonical phụ thuộc mtime rồi tới inode, nên không khẳng định file
+    // nào; chỉ khẳng định cặp đã đi tới đích.
+    let xong = [State::Canonical, State::Verified];
+    assert!(xong.contains(&truoc.0.state), "{:?}", truoc.0.state);
+    assert!(xong.contains(&truoc.1.state), "{:?}", truoc.1.state);
+    assert_eq!(truoc.0.group_id, truoc.1.group_id);
 
     // Chạy `nasdedup scan` lần hai trên thư viện đã xử lý xong.
     b.quet();
-    let sau = b.row("a.mp4");
-    assert_eq!(sau.id, truoc.id, "vẫn là row cũ");
-    assert_eq!(sau.state, truoc.state, "không được đưa về vạch xuất phát");
-    assert_eq!(sau.sparse_hash, truoc.sparse_hash);
+    for (rel, cu) in [("a.mp4", &truoc.0), ("b.mp4", &truoc.1)] {
+        let sau = b.row(rel);
+        assert_eq!(sau.id, cu.id, "{rel}: vẫn là row cũ");
+        assert_eq!(sau.state, cu.state, "{rel}: không được đưa về vạch xuất phát");
+        assert_eq!(sau.sparse_hash, cu.sparse_hash, "{rel}");
+        assert_eq!(sau.group_id, cu.group_id, "{rel}");
+    }
 }

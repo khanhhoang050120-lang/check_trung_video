@@ -5,3 +5,4 @@
 pub mod check;
 pub mod db;
 pub mod report;
+pub mod status;

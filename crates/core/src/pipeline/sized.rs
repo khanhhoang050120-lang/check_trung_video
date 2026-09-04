@@ -55,6 +55,30 @@ fn tinh_hash(ctx: &StepCtx, rec: &FileRecord) -> Result<StepOutcome, StepError> 
         return Ok(quay_ve_settling(ctx, rec, "fingerprint đổi trước khi hash"));
     }
 
+    // Row đến từ initial scan có `magic_ok = NULL`: nó đi thẳng vào `sized` mà chưa
+    // qua bước ổn định, nên đây là chỗ duy nhất kiểm magic cho nó (spec 5.10 pha C).
+    // Thiếu bước này thì một file văn bản 4 GB đổi tên thành `.mp4` vẫn bị đọc hết.
+    if rec.magic_ok.is_none() {
+        let ext = rec
+            .loc
+            .rel_path
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !crate::filter::kiem_file(&ext, f.as_ref())?.cho_qua() {
+            return Ok(StepOutcome::apply(Transition::new(
+                rec.id,
+                State::Sized,
+                State::Skipped,
+                Patch::new()
+                    .magic_ok(false)
+                    .skip_reason(Some(SkipReason::BadMagic.as_str().to_owned()))
+                    .ready_at(None),
+                ctx.now,
+            )));
+        }
+    }
+
     let params = HashParams::from_config(ctx.hash)?;
     let h = sparse_hash(params, f.as_ref(), fp0.size, ctx.gov)?;
 
@@ -72,6 +96,7 @@ fn tinh_hash(ctx: &StepCtx, rec: &FileRecord) -> Result<StepOutcome, StepError> 
         Patch::new()
             .sparse_hash(Some(h))
             .hash_version(HASH_VERSION)
+            .magic_ok(true)
             .heavy_wait_since(None)
             .ready_at(Some(ctx.now)),
         ctx.now,

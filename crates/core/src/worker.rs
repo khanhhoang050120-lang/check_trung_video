@@ -69,7 +69,13 @@ pub fn mot_vong(ctx: &StepCtx, max_wait_ms: i64) -> Result<KetQua, RepoError> {
         Ok(StepOutcome::Defer { until, .. }) => {
             hoan(ctx, &rec, until)?;
         }
-        Ok(StepOutcome::Noop) => {}
+        Ok(StepOutcome::Noop) => {
+            // Bảo hiểm chống quay vòng: `Noop` mà `ready_at` vẫn còn thì `next_ready`
+            // trả lại đúng row đó ngay lượt sau, và worker ngốn hết một lõi CPU mà
+            // không làm gì. Đẩy hẹn ra một phút; nếu row thật sự đã được người khác
+            // xử lý thì state đã đổi và nó sẽ không quay lại nữa.
+            hoan(ctx, &rec, ctx.now + 60_000)?;
+        }
         Err(e) => {
             that_bai(ctx, &rec, &e)?;
         }
