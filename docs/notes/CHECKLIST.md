@@ -32,6 +32,22 @@ Cả ba phải xanh. Ngoài ra:
 - [ ] Thời gian chạy có hợp lý không? Xong quá nhanh thường nghĩa là một nhóm việc đã bị bỏ qua hoặc gãy sớm.
 - [ ] Nếu đỏ, xem từng nhóm việc qua `runs/<id>/jobs` để biết bước nào gãy trước khi đoán nguyên nhân.
 
+## Khi viết code chỉ chạy trên Linux (crate `nasdedup-linux`)
+
+Máy dev chạy Windows. `crates/linux/src/lib.rs` bắt đầu bằng `#![cfg(target_os = "linux")]`, nên trên Windows nó biên dịch thành **crate rỗng**: không một dòng nào được kiểm kiểu. Viết vài trăm dòng rồi đẩy lên CI mới biết sai là cách làm việc tệ (xem BUG-008).
+
+Đã có target Linux cài sẵn, và `cargo check` **không cần linker**, nên kiểm được tại chỗ:
+
+```bash
+cargo check  --target x86_64-unknown-linux-gnu -p nasdedup-linux
+cargo clippy --target x86_64-unknown-linux-gnu -p nasdedup-linux --all-targets -- -D warnings
+```
+
+- [ ] Chạy hai lệnh trên sau **mỗi** lần sửa `crates/linux/`, không đợi tới lúc commit.
+- [ ] `--workspace` với target Linux thì **không** chạy được: `rusqlite` (feature `bundled`) cần trình biên dịch C chéo. Chỉ kiểm được `-p nasdedup-core` và `-p nasdedup-linux`.
+- [ ] Vì vậy phần Linux của `crates/daemon/src/platform/linux.rs` (phụ thuộc `nasdedup-db`) vẫn chỉ CI mới thấy → giữ file đó **mỏng**, đẩy hết logic xuống `nasdedup-linux`.
+- [ ] Code chạy được thì vẫn phải CI Linux xác nhận: `cargo check` không chạy test, và syscall chỉ lộ lỗi khi thật sự gọi.
+
 ## Khi có hai bản cài đặt cùng một trait
 
 Bộ test tương thích dùng chung là điều kiện cần, **không đủ**: nó chỉ chứng minh hai bản khớp nhau trên những đầu vào người viết nghĩ tới. Xem BUG-009 và BUG-011 — ba lỗi và chín chỗ lệch lọt qua 38 kịch bản viết tay.

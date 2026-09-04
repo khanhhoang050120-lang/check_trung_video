@@ -83,6 +83,17 @@ pub trait OpenedFile: ReadAt {
     fn already_shared_with(&self, _other: &dyn OpenedFile) -> io::Result<Option<u64>> {
         Ok(None)
     }
+
+    /// File descriptor thật, nếu có (spec 3.3).
+    ///
+    /// Trả `Option` chứ không bắt buộc: `MemoryFs` không có fd nào cả, và đó là
+    /// điều tốt — nó chứng minh rằng pipeline không lén phụ thuộc vào syscall. Các
+    /// backend cần fd (`KernelDedupe`, `VerifiedClone` ở Phase 5) phải tự báo lỗi rõ
+    /// ràng khi nhận `None` thay vì im lặng làm sai.
+    #[cfg(unix)]
+    fn as_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        None
+    }
 }
 
 /// Mở file và lấy metadata theo `FileLoc` (spec 5.6).
