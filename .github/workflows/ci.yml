@@ -93,8 +93,15 @@ jobs:
           echo "$out"
           if [ $code -ne 0 ]; then
             echo "$out" | grep -E "^(test .* FAILED|assertion|thread)" | head -20 |               while IFS= read -r line; do echo "::error::${line}"; done
+            exit $code
           fi
-          exit $code
+          # `--ignored` lọc ra không test nào thì cargo vẫn thoát mã 0; xem chú thích
+          # cùng loại ở nhóm việc `io` bên dưới.
+          if ! echo "$out" | grep -qE "test result: ok\. [1-9][0-9]* passed"; then
+            echo "::error::nhóm việc Btrfs không chạy test nào — xanh giả"
+            exit 1
+          fi
+          exit 0
 
   # Đo thật trên đĩa: ba tiêu chí hoàn thành của Phase 3 vốn được viết là "chạy
   # trên NAS rồi đọc `iostat`". Chúng không cần NAS — chỉ cần một đĩa block thật, mà
@@ -133,8 +140,16 @@ jobs:
           echo "$out"
           if [ $code -ne 0 ]; then
             echo "$out" | grep -E "^(test .* FAILED|assertion|thread)" | head -20               | while IFS= read -r line; do echo "::error::${line}"; done
+            exit $code
           fi
-          exit $code
+          # `cargo test -- --ignored` mà lọc ra KHÔNG test nào vẫn thoát mã 0. Không
+          # có dòng này thì đổi tên file test, gõ nhầm `--test`, hay lỡ bỏ `#[ignore]`
+          # đều biến bước đo thành bước không đo gì mà vẫn xanh.
+          if ! echo "$out" | grep -qE "test result: ok\. [1-9][0-9]* passed"; then
+            echo "::error::bước đo không chạy test nào — xanh giả"
+            exit 1
+          fi
+          exit 0
       - name: Đo phát hiện đĩa bận dưới tải thật (tiêu chí 3)
         run: |
           set +e
@@ -143,8 +158,13 @@ jobs:
           echo "$out"
           if [ $code -ne 0 ]; then
             echo "$out" | grep -E "^(test .* FAILED|assertion|thread)" | head -20               | while IFS= read -r line; do echo "::error::${line}"; done
+            exit $code
           fi
-          exit $code
+          if ! echo "$out" | grep -qE "test result: ok\. [1-9][0-9]* passed"; then
+            echo "::error::bước đo không chạy test nào — xanh giả"
+            exit 1
+          fi
+          exit 0
 
   # Binary phát hành cho NAS là musl tĩnh (bản đặc tả NFR-4).
   # Không chạy trên pull request vì tốn nhiều phút; chỉ chạy khi đẩy lên main.

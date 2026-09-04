@@ -77,6 +77,10 @@ rất thuyết phục, và không chạm một dòng nào của mã sản phẩm
 - [ ] Công tắc bật/tắt bằng biến môi trường: thiếu biến thì **đỏ**, đừng `return` im lặng.
       `#[ignore]` đã đủ để `cargo test` thường bỏ qua; một lớp gác thứ hai mà "xanh" khi
       thiếu biến chỉ tạo thêm đường xanh giả. Đổi lại, CI phải gọi từng `--test <tên>`.
+- [ ] Bước CI chạy `cargo test -- --ignored` phải **tự chứng minh là nó có chạy test**:
+      lọc ra không test nào thì cargo vẫn thoát mã 0. Chỉ cần đổi tên file test, gõ nhầm
+      `--test`, hay lỡ bỏ `#[ignore]` là bước đo thành bước không đo gì mà vẫn xanh. Thêm
+      `grep -qE "test result: ok\. [1-9][0-9]* passed"` sau mỗi bước như vậy.
 
 ## Khi mã chạm tới filesystem
 
