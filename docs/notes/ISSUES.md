@@ -4,6 +4,30 @@ Những chỗ cố ý để lại chưa hoàn chỉnh. Khi xử lý xong thì ch
 
 ---
 
+## ISSUE-013 — Phase 4 bước 4 còn thiếu hai kịch bản test
+
+**Từ:** Phase 4 · **Nơi:** `crates/core/src/repo/conformance/` hoặc
+`crates/core/src/pipeline/tests_e2e.rs`
+
+**Hai tiêu chí hoàn thành chính thức của Phase 4 đều đã đạt và CI xanh** (mỗi kịch bản
+upload tạo đúng 1 row với path cuối; presence 100k file dưới 10 phút). Thứ còn thiếu
+là hai kịch bản ở **bước 4** của mục 11 (dòng 1067 bản đặc tả):
+
+1. **File `deduped` bị `touch`** → fingerprint đổi `mtime` nhưng nội dung không đổi
+   → **không được re-hash quá 16 MiB**. Kiểm rằng `upsert_pending` không đẩy row về
+   vạch xuất phát và không bắt đọc lại cả file.
+2. **File `deduped` bị ghi đè** → fingerprint đổi thật → về `settling`, hash và group
+   bị xóa.
+
+**Viết được thành test core chạy trên Windows** — chúng kiểm hành vi của
+`upsert_pending` khi fingerprint đổi, không cần filesystem thật.
+
+**Vì sao đáng làm trước Phase 5:** đây chính là tầng mà Phase 5 dựa lên trực tiếp khi
+nó thật sự **ghi** vào file của người dùng. Một row đáng lẽ phải về `settling` mà vẫn
+ở `deduped` nghĩa là daemon tin vào một hash đã cũ.
+
+---
+
 ## ISSUE-012 — `cargo test --workspace` trên máy dev **không chạy một test nào** của `nasdedup-linux`
 
 **Từ:** Phase 4 Gói D · **Nơi:** `crates/linux/` (mọi test), `.github/workflows/ci.yml`
