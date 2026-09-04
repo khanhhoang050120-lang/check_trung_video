@@ -19,7 +19,30 @@ use super::{StepCtx, StepError, StepOutcome};
 
 pub fn buoc(ctx: &StepCtx, rec: &FileRecord) -> Result<StepOutcome, StepError> {
     match rec.sparse_hash {
-        Some(h) => group::xep_cho(ctx, rec, h),
+        Some(h) => {
+            // Hash đã có nghĩa là ta sắp **tin** vào nó để xếp nhóm, nên phải kiểm
+            // rằng nó còn mô tả đúng file trên đĩa. Nhánh `tinh_hash` bên dưới có
+            // kiểm (fp0/fp1 quanh lần đọc); nhánh này thì trước đây không, nên một
+            // file bị ghi đè sau khi hash sẽ mang hash cũ đi xếp nhóm — và nếu nó là
+            // canonical thì cả nhóm mô tả một nội dung không còn tồn tại (spec 5.4,
+            // 5.6 bước 5).
+            //
+            // Chỉ tốn một `statx`, không đọc nội dung.
+            match ctx.fs.statx(&rec.loc) {
+                Ok(id) if id.fingerprint() != rec.fingerprint() => {
+                    Ok(quay_ve_settling(ctx, rec, "fingerprint đổi sau khi đã hash"))
+                }
+                Ok(_) => group::xep_cho(ctx, rec, h),
+                Err(e) if e.is_not_found() => Ok(StepOutcome::apply(Transition::new(
+                    rec.id,
+                    State::Sized,
+                    State::Missing,
+                    Patch::new().prev_state(Some(State::Sized)).ready_at(None),
+                    ctx.now,
+                ))),
+                Err(e) => Err(e.into()),
+            }
+        }
         None => tinh_hash(ctx, rec),
     }
 }

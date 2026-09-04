@@ -406,3 +406,41 @@ fn ctx_khong_co_khung_gio_thi_hen_mot_phut() {
         khac => panic!("{khac:?}"),
     }
 }
+
+/// Row đã có hash mà file bị ghi đè: phải phát hiện **trước** khi dùng hash đó để
+/// xếp nhóm (spec 5.4, 5.6 bước 5).
+///
+/// Trước đây nhánh "đã có hash" đi thẳng vào bước xếp nhóm mà không kiểm gì. Một
+/// file bị ghi đè sau khi hash sẽ mang hash cũ đi tìm bạn, và nếu nó là canonical
+/// thì cả nhóm mô tả một nội dung không còn tồn tại.
+#[test]
+fn hash_cu_khong_duoc_dung_de_xep_nhom_sau_khi_file_doi() {
+    let b = Ban::moi();
+    let rec = b.them_file(1, "a.mp4", 1, mp4(KICH_THUOC, 0));
+    let rec = b.chay_va_ap(&rec); // → sized
+    let rec = b.chay_va_ap(&rec); // → sized, đã có hash
+    assert!(rec.sparse_hash.is_some());
+
+    // Nội dung đổi nhưng kích thước giữ nguyên; DB chưa biết gì.
+    b.ghi_de(&rec.loc, MTIME_CU_NS + 12_345);
+
+    let sau = b.chay_va_ap(&rec);
+    assert_eq!(sau.state, State::Settling, "phải quay lại từ đầu");
+    assert_eq!(sau.sparse_hash, None, "hash cũ phải bị vứt, không được đem đi xếp nhóm");
+    assert_eq!(sau.group_id, None);
+    assert_eq!(sau.attempts, 0, "file bị ghi không phải lỗi của daemon");
+}
+
+/// Row `sized` mà file đã biến mất: `missing`, không phải lỗi.
+#[test]
+fn file_bien_mat_khi_da_co_hash() {
+    let b = Ban::moi();
+    let rec = b.them_file(1, "a.mp4", 1, mp4(KICH_THUOC, 0));
+    let rec = b.chay_va_ap(&rec);
+    let rec = b.chay_va_ap(&rec);
+    b.fs.remove(&rec.loc);
+
+    let sau = b.chay_va_ap(&rec);
+    assert_eq!(sau.state, State::Missing);
+    assert_eq!(sau.prev_state, Some(State::Sized));
+}

@@ -234,14 +234,12 @@ fn file_bi_ghi_de_giua_chung_thi_quay_lai_tu_dau() {
     b.xu_ly();
 
     let sau = b.row("a.mp4");
-    // Điều bắt buộc là **kết luận** không được dựa trên hash cũ. Chỗ phát hiện có
-    // thể là bước hash hoặc bước verify tùy đường đi; test khẳng định kết quả chứ
-    // không khẳng định cơ chế.
     assert_ne!(sau.state, State::Verified, "không được coi là giống nhau nữa");
     assert_ne!(sau.state, State::Deduped);
-    if sau.sparse_hash.is_some() {
-        assert_ne!(sau.sparse_hash, truoc.sparse_hash, "nếu còn hash thì phải là hash mới");
-    }
+    assert_ne!(
+        sau.sparse_hash, truoc.sparse_hash,
+        "hash cũ mô tả nội dung không còn tồn tại; phải bị vứt hoặc tính lại"
+    );
     assert_eq!(sau.attempts, 0, "file bị ghi không phải lỗi của daemon");
 }
 

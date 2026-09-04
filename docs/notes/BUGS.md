@@ -3,6 +3,44 @@
 Mới nhất ở trên cùng. Mỗi mục: triệu chứng, nguyên nhân gốc, cách sửa, bài học.
 
 ---
+## BUG-017 — Hash cũ được đem đi xếp nhóm sau khi file đã đổi
+
+**Ngày:** 2026-09-04 · **Phase:** 3 · **Nơi:** `crates/core/src/pipeline/sized.rs`
+
+**Triệu chứng.** Test tích hợp trên filesystem thật: ghi đè một file **đã hash** bằng
+nội dung khác (giữ nguyên kích thước), đưa row về `sized`, chạy lại pipeline — row
+giữ nguyên `sparse_hash` cũ và quay về `canonical`.
+
+**Nguyên nhân gốc.** `sized::buoc` rẽ hai nhánh:
+
+```rust
+match rec.sparse_hash {
+    Some(h) => group::xep_cho(ctx, rec, h),   // ← không kiểm gì
+    None    => tinh_hash(ctx, rec),           // ← có kiểm fp0 và fp1
+}
+```
+
+Nhánh `tinh_hash` giữ đúng bất biến fingerprint của spec 5.6 bước 5: chụp `fp0`
+trước khi đọc, `fp1` sau khi đọc, lệch thì hủy. Nhưng nhánh còn lại đi **thẳng** vào
+bước xếp nhóm và tin vào hash đã lưu mà không hỏi file trên đĩa còn như vậy không.
+
+**Vì sao nguy hiểm.** Không dẫn tới dedup sai — bước verify vẫn so từng byte và sẽ
+báo `Differs`. Nhưng nếu row đó là **canonical**, verify không bao giờ chạy trên nó,
+và cả nhóm mang một `sparse_hash` mô tả nội dung không còn tồn tại. File tới sau
+trùng hash **cũ** sẽ bị xếp vào nhóm rồi mới bị bác bỏ, tốn 2×size I/O mỗi lần.
+
+Spec 5.4 vốn đã lường trước ("bầu lại canonical khi `fstat` lệch"), nhưng bản cài đặt
+không có chỗ nào thực hiện phép so đó.
+
+**Cách sửa.** Thêm một `statx` ở đầu nhánh "đã có hash": lệch fingerprint thì
+`quay_ve_settling` (vứt hash, không tăng `attempts`), `ENOENT` thì `missing`. Một
+syscall metadata, không đọc nội dung — rẻ hơn nhiều so với hậu quả.
+
+**Bài học.** Khi một hàm rẽ nhánh mà chỉ một nhánh kiểm bất biến, hãy hỏi ngay nhánh
+kia dựa vào đâu. Ở đây nhánh "đã có hash" ngầm giả định "hash trong DB thì đúng", mà
+đó chính là điều toàn bộ bất biến fingerprint sinh ra để không phải giả định.
+
+---
 
 ## BUG-016 — Ba lỗi mà chỉ test trên filesystem thật mới phơi ra
 
