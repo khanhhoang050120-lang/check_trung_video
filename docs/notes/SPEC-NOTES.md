@@ -6,7 +6,7 @@ Chỗ bản đặc tả mơ hồ, sai, hoặc lệch với code. Sửa được 
 
 ## SPEC-005 — Trait `Repository` thực tế lệch mục 3.3 ở sáu chỗ
 
-**Trạng thái:** đã hiện thực hóa, **spec cần cập nhật**
+**Trạng thái:** đã hiện thực hóa, **spec đã cập nhật** (mục 3.3 và 4.2, ngày 2026-09-04)
 
 Mục 3.3 viết chữ ký rút gọn (xem SPEC-004). Khi hiện thực hóa Phase 1, sáu chỗ phải đổi **ngữ nghĩa**
 chứ không chỉ cú pháp, nên phải ghi lại:
@@ -20,7 +20,10 @@ chứ không chỉ cú pháp, nên phải ghi lại:
 | 5 | `find_by_path` không nói thứ tự | ưu tiên row **chưa** `missing`/`gone`, rồi `id` nhỏ nhất | Sau khi đổi tên đè, hai row cùng `(root_id, rel_path)` cùng tồn tại: một row sống và một row vừa bị đánh dấu `missing`. Không có quy tắc thì kết quả phụ thuộc thứ tự chèn. |
 | 6 | không nói DB nằm đâu | `Config::db_path()` = `state_dir/nasdedup.db` | Mục 4.2 chỉ nói thư mục; tên file phải chốt ở một chỗ. |
 
-**Cần làm:** cập nhật mục 3.3 và 4.2 của bản đặc tả cho khớp.
+Đã sửa thẳng vào bản đặc tả: chữ ký đầy đủ ở mục 3.3, đường dẫn DB ở mục 4.2, và chữ ký
+`presence_finish` ở mục 5.10. Mục 3.3 nay cũng ghi rõ các đầu vào biên mà hai bản cài đặt phải
+thống nhất (đường dẫn rỗng, dấu `/` thừa, nhiều row cùng path, nhiều event cùng millisecond) — đó
+chính là chỗ BUG-009/010/011 nằm.
 
 ---
 

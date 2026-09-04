@@ -258,8 +258,11 @@ pub fn step(ctx: &StepCtx, rec: &FileRecord) -> Result<StepOutcome, StepError>; 
 
 pub struct UpsertResult { pub id: i64, pub dropped_as_self_event: bool }   // giới hạn max_pending: handler kiểm pending_counts (cache 1 s) TRƯỚC khi upsert
 pub trait Repository {
+    // Mọi hàm GHI đều nhận `now: Ts`: Repository không được đọc đồng hồ, vì test
+    // phải điều khiển được thời gian và hai bản cài đặt phải cho cùng kết quả với
+    // cùng đầu vào. Xem docs/notes/SPEC-NOTES.md SPEC-005.
     // hàng đợi
-    fn upsert_pending(&self, id: &Identity, loc: &FileLoc, ready_at: Ts, priority: u8) -> Result<UpsertResult, RepoError>; // 4.3
+    fn upsert_pending(&self, id: &Identity, loc: &FileLoc, ready_at: Ts, priority: u8, now: Ts) -> Result<UpsertResult, RepoError>; // 4.3
     fn next_ready(&self, now: Ts, allow_heavy: bool, max_wait_ms: i64) -> Result<Option<FileRecord>, RepoError>;          // 4.3
     fn apply(&self, t: &Transition) -> Result<bool, RepoError>;              // MỘT transaction; CAS `id AND state = from`; false = row đã đổi state:
                                                                               //   bỏ patch/group/others nhưng VẪN ghi event (note = state_raced) và journal
@@ -267,33 +270,40 @@ pub trait Repository {
     // tra cứu
     fn find_by_key(&self, key: &FileKey) -> Result<Option<FileRecord>, RepoError>;
     fn find_by_path(&self, loc: &FileLoc) -> Result<Option<FileRecord>, RepoError>;   // caller PHẢI statx và khớp (sub_id, ino) trước khi dùng
-    fn rename(&self, key: &FileKey, new_loc: &FileLoc) -> Result<(), RepoError>;       // cùng transaction: row khác khóa tại new_loc → missing
+                                                                              //   nhiều row cùng path (sau rename đè): ưu tiên row chưa missing|gone, rồi id nhỏ nhất
+    fn rename(&self, key: &FileKey, new_loc: &FileLoc, now: Ts) -> Result<(), RepoError>;  // MỘT transaction: row khác khóa tại new_loc → missing;
+                                                                              //   khóa không tồn tại → Err và KHÔNG ghi gì
     fn candidates(&self, me: &FileRecord, scope: Scope, settled_before_ns: i64, limit: usize) -> Result<Vec<FileRecord>, RepoError>; // 5.4: chỉ state sized|distinct
     fn groups_by_key(&self, domain: &DomainId, size: u64, sparse_hash: &[u8; 32]) -> Result<Vec<Group>, RepoError>;          // ORDER BY id
+    fn group_get(&self, group: i64) -> Result<Option<Group>, RepoError>;
     fn group_members(&self, group: i64) -> Result<Vec<FileRecord>, RepoError>;
-    // watcher / reconcile
-    fn rename_prefix(&self, old_dir: &FileLoc, new_dir: &FileLoc) -> Result<u64, RepoError>;
-    fn mark_missing(&self, loc: &FileLoc) -> Result<(), RepoError>;          // theo path (file đã biến mất)
-    fn mark_missing_prefix(&self, dir: &FileLoc) -> Result<u64, RepoError>;
+    // watcher / reconcile — mọi tham số thư mục: rel_path rỗng = cả root, dấu '/' cuối bị bỏ qua
+    fn rename_prefix(&self, old_dir: &FileLoc, new_dir: &FileLoc, now: Ts) -> Result<u64, RepoError>;
+    fn mark_missing(&self, loc: &FileLoc, now: Ts) -> Result<(), RepoError>;  // theo path: MỌI row đang nhận path đó
+    fn mark_missing_prefix(&self, dir: &FileLoc, now: Ts) -> Result<u64, RepoError>;
     fn restore_or_reset(&self, key: &FileKey, id: &Identity, now: Ts) -> Result<(), RepoError>;   // missing → prev_state | settling
     fn presence_begin(&self) -> Result<(), RepoError>;
     fn presence_seen(&self, seen: &[(FileKey, Fingerprint, FileLoc)], now: Ts) -> Result<u64, RepoError>;   // INSERT seen + phục hồi row missing kèm cập nhật path (5.10)
-    fn presence_finish(&self, root_id: i64, scan_id: Ts) -> Result<(u64, u64), RepoError>;      // (→missing, →gone)
+    fn presence_finish(&self, root_id: i64, scan_id: Ts, retention_ms: i64) -> Result<(u64, u64), RepoError>;  // (→missing, →gone); ngưỡng gone là chính sách nên do caller truyền
     // journal / volumes / roots / scan / meta / audit
-    fn journal_begin(&self, j: &JournalRow) -> Result<i64, RepoError>; fn journal_update(&self, id: i64, st: JournalState, durable: bool) -> Result<(), RepoError>;
+    fn journal_begin(&self, j: &JournalRow) -> Result<i64, RepoError>; fn journal_update(&self, id: i64, st: JournalState, durable: bool, now: Ts) -> Result<(), RepoError>;
     fn journal_open(&self) -> Result<Vec<JournalRow>, RepoError>;
     fn volume_upsert(&self, v: &Volume) -> Result<i64, RepoError>; fn volume_list(&self) -> Result<Vec<Volume>, RepoError>;
-    fn root_upsert(&self, path: &Path, domain: &DomainId) -> Result<i64, RepoError>; fn root_list(&self) -> Result<Vec<Root>, RepoError>;
+    fn root_upsert(&self, r: &Root, now: Ts) -> Result<i64, RepoError>;      // khớp theo path; r.id > 0 và còn trống thì dùng đúng id đó, ngược lại cấp id mới
+    fn root_list(&self) -> Result<Vec<Root>, RepoError>;
     fn scan_progress_get(&self, root_id: i64) -> Result<Option<ScanProgress>, RepoError>; fn scan_progress_set(&self, p: &ScanProgress) -> Result<(), RepoError>;
-    fn park_domain(&self, domain: &DomainId, err: &str) -> Result<u64, RepoError>; fn unpark_domain(&self, domain: &DomainId, now: Ts) -> Result<u64, RepoError>;
+    fn park_domain(&self, domain: &DomainId, err: &str, now: Ts) -> Result<u64, RepoError>; fn unpark_domain(&self, domain: &DomainId, now: Ts) -> Result<u64, RepoError>;
     fn requeue_verified(&self, allow: &[FileLoc], now: Ts) -> Result<u64, RepoError>;   // (root_id, rel_prefix); rel_prefix rỗng = cả root; range query trên idx_files_path
-    fn record_event(&self, ev: &DedupEvent) -> Result<(), RepoError>; fn events(&self, f: &EventFilter) -> Result<Vec<DedupEvent>, RepoError>;
+    fn record_event(&self, ev: &DedupEvent) -> Result<(), RepoError>; fn events(&self, f: &EventFilter) -> Result<Vec<DedupEvent>, RepoError>;  // ts DESC, cùng ts thì ghi sau đứng trước
+    fn group_note_set(&self, n: &GroupNote) -> Result<(), RepoError>; fn group_note_get(&self, group: i64) -> Result<Option<GroupNote>, RepoError>;  // bản chốt mục 17
     fn meta_get(&self, k: &str) -> Result<Option<String>, RepoError>; fn meta_set(&self, k: &str, v: &str) -> Result<(), RepoError>;
-    fn purge(&self, now: Ts, retention_ms: i64) -> Result<u64, RepoError>;
+    fn purge(&self, now: Ts, retention_ms: i64) -> Result<u64, RepoError>;   // xóa row gone cũ + event cũ; nhóm trỏ vào row bị xóa phải mất canonical
     fn checkpoint(&self) -> Result<(), RepoError>;
 }
 pub enum RepoError { Busy, Corrupt(String), Constraint(String), Other(String) }
 ```
+
+Hai bản cài đặt (`MemoryRepository` và `SqliteRepo`) phải có **cùng ngữ nghĩa**, kể cả ở các đầu vào biên: đường dẫn rỗng, dấu `/` thừa, khóa không tồn tại, nhiều row cùng path, nhiều event cùng một millisecond. Điều kiện cần là bộ test tương thích dùng chung `nasdedup_core::repository_conformance_tests!(factory)`; điều kiện đủ thì không có — xem `docs/notes/CHECKLIST.md`, mục "Khi có hai bản cài đặt cùng một trait".
 
 `step` là hàm thuần: mở file qua `ctx.fs`, đọc qua `ReadAt`, trả `StepOutcome`; worker chỉ lặp `next_ready → step → apply`. Unit test toàn bộ pipeline với `MemoryRepository`, `MemoryFs`, `DryRunDeduper`/`NoopDeduper`.
 
@@ -432,7 +442,7 @@ CREATE TABLE scan_progress (
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);   -- schema_version, hash_chunks, hash_chunk_len, sample_secret, rescan_needed, install_secret
 ```
 
-`files` là **cache dựng lại được** từ filesystem; `dedup_events` là ledger. DB đặt tại `/var/lib/nasdedup/` (0700, umask 077), ưu tiên system partition/SSD; trên Btrfs đặt trong thư mục `chattr +C`. DB actor dùng `prepare_cached` cho mọi statement; scheduler chạy `PRAGMA wal_checkpoint(TRUNCATE)` mỗi giờ khi đĩa rảnh và sau mỗi scan; `PRAGMA incremental_vacuum` sau `purge`. Không dùng `secure_delete`.
+`files` là **cache dựng lại được** từ filesystem; `dedup_events` là ledger. DB đặt tại `<general.state_dir>/nasdedup.db` (mặc định `/var/lib/nasdedup/`, xem `Config::db_path()`) (0700, umask 077), ưu tiên system partition/SSD; trên Btrfs đặt trong thư mục `chattr +C`. DB actor dùng `prepare_cached` cho mọi statement; scheduler chạy `PRAGMA wal_checkpoint(TRUNCATE)` mỗi giờ khi đĩa rảnh và sau mỗi scan; `PRAGMA incremental_vacuum` sau `purge`. Không dùng `secure_delete`.
 
 ### 4.3 Hàng đợi
 
@@ -828,7 +838,7 @@ Event thread giữ `coalesce: HashMap<FileKey, PendingEv>` và flush vào DB m�
 
 **Remote scan** (root `kind = "remote"`, mỗi `timing.remote_scan_interval` = 1 h): thay cho cả watcher lẫn delta reconcile. Walk `readdir + statx` toàn bộ root qua CIFS (không dùng ctime), so `(size, mtime_ns)` với DB theo khóa `(root_id, rel_path)`: mới hoặc đổi → `upsert_pending` với `priority = 1`; không thấy → xử lý như presence (đánh `missing` khi walk hoàn tất trọn root). Mount point biến mất (`ENOTCONN`, `EHOSTDOWN`, thư mục rỗng bất thường) → **bỏ qua lượt này**, log WARN, **không** đánh `missing` bất kỳ row nào. Đọc metadata qua token bucket `io.remote_read_rate`.
 
-**Presence scan** (mỗi `timing.presence_interval` = 7 d, trong `heavy_windows`, phải hoàn tất trọn một root): `scan_id = now`; `presence_begin()` tạo bảng tạm `seen(sub_id, ino)`; walk `readdir + statx` mọi file → `presence_seen(&[(key, fingerprint, loc)], now)` theo lô 5 000: DB actor `INSERT INTO seen` và, cho row đang `missing` cùng khóa, phục hồi kèm cập nhật `root_id/rel_path`: fingerprint khớp → `state = COALESCE(prev_state, 'settling')` (`ready_at = now` nếu thuộc hàng đợi), lệch → `settling` (reset hash/group); kết thúc root — **chỉ khi** walk hoàn tất, `dirfd` root vẫn cùng `(st_dev, st_ino)` và `domain_id`, và `seen` không rỗng trong khi DB có row của root (root unmount/rỗng → bỏ qua + ALERT): `presence_finish(root_id, scan_id)` = `UPDATE files SET prev_state = state, state = 'missing', ready_at = NULL WHERE root_id = :root AND state NOT IN ('missing','gone') AND updated_at < :scan_id AND NOT EXISTS (SELECT 1 FROM seen WHERE seen.sub_id = files.sub_id AND seen.ino = files.ino)` (row tạo/cập nhật trong lúc walk không bị đụng) và `UPDATE files SET state = 'gone' WHERE root_id = :root AND state = 'missing' AND updated_at < :scan_id − :retention AND NOT EXISTS (SELECT 1 FROM seen …)`. Bị cắt giữa chừng (khung giờ, SIGTERM) → bỏ kết quả, không đánh dấu gì. `missing` ngoài presence chỉ khi có bằng chứng dương (`statx`/`open` → `ENOENT`, `Remove` event).
+**Presence scan** (mỗi `timing.presence_interval` = 7 d, trong `heavy_windows`, phải hoàn tất trọn một root): `scan_id = now`; `presence_begin()` tạo bảng tạm `seen(sub_id, ino)`; walk `readdir + statx` mọi file → `presence_seen(&[(key, fingerprint, loc)], now)` theo lô 5 000: DB actor `INSERT INTO seen` và, cho row đang `missing` cùng khóa, phục hồi kèm cập nhật `root_id/rel_path`: fingerprint khớp → `state = COALESCE(prev_state, 'settling')` (`ready_at = now` nếu thuộc hàng đợi), lệch → `settling` (reset hash/group); kết thúc root — **chỉ khi** walk hoàn tất, `dirfd` root vẫn cùng `(st_dev, st_ino)` và `domain_id`, và `seen` không rỗng trong khi DB có row của root (root unmount/rỗng → bỏ qua + ALERT): `presence_finish(root_id, scan_id, retention_ms)` = `UPDATE files SET prev_state = state, state = 'missing', ready_at = NULL WHERE root_id = :root AND state NOT IN ('missing','gone') AND updated_at < :scan_id AND NOT EXISTS (SELECT 1 FROM seen WHERE seen.sub_id = files.sub_id AND seen.ino = files.ino)` (row tạo/cập nhật trong lúc walk không bị đụng) và `UPDATE files SET state = 'gone' WHERE root_id = :root AND state = 'missing' AND updated_at < :scan_id − :retention AND NOT EXISTS (SELECT 1 FROM seen …)`. Bị cắt giữa chừng (khung giờ, SIGTERM) → bỏ kết quả, không đánh dấu gì. `missing` ngoài presence chỉ khi có bằng chứng dương (`statx`/`open` → `ENOENT`, `Remove` event).
 
 ### 5.11 Boot
 
