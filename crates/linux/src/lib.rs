@@ -17,5 +17,6 @@ pub mod fsdetect;
 pub mod ioctl;
 pub mod open;
 pub mod prio;
+pub mod scan;
 
 pub use open::LinuxFs;

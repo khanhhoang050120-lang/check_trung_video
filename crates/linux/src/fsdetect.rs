@@ -83,13 +83,23 @@ fn statfs(fd: BorrowedFd<'_>) -> io::Result<libc::statfs> {
 ///
 /// Dùng cho ZFS (nơi `f_fsid` bắt nguồn từ `fsid_guid` của dataset, bền qua reboot)
 /// và mọi FS không có ioctl riêng.
+/// `statfs.f_type` về `i64`, dùng được trên cả glibc lẫn musl.
+///
+/// glibc khai `f_type` là `i64`, musl khai `u64`. `try_from` nhận cả hai, nhưng
+/// trên glibc clippy coi đó là chuyển đổi thừa — nên phải tắt lint tại đây. Bỏ
+/// chuyển đổi đi thì build musl gãy; CI đã bắt đúng lỗi đó một lần.
+#[allow(clippy::useless_conversion)]
+fn ma_fs(s: &libc::statfs) -> i64 {
+    i64::try_from(s.f_type).unwrap_or(0)
+}
+
 fn tu_fsid(s: &libc::statfs) -> [u8; 16] {
     let mut out = [0_u8; 16];
     // `f_fsid` là `{ int val[2] }`; ghép hai nửa lại thành 8 byte.
     let val: [i32; 2] = unsafe { std::mem::transmute_copy(&s.f_fsid) };
     out[0..4].copy_from_slice(&val[0].to_le_bytes());
     out[4..8].copy_from_slice(&val[1].to_le_bytes());
-    out[8..16].copy_from_slice(&s.f_type.to_le_bytes());
+    out[8..16].copy_from_slice(&ma_fs(s).to_le_bytes());
     out
 }
 
@@ -103,7 +113,7 @@ fn tu_fsid(s: &libc::statfs) -> [u8; 16] {
 /// `fstatfs` thất bại.
 pub fn nhan_dang(fd: BorrowedFd<'_>) -> io::Result<FsInfo> {
     let s = statfs(fd)?;
-    let f_type = s.f_type as i64;
+    let f_type = ma_fs(&s);
 
     // `sub_id` **luôn** lấy từ `f_fsid` của chính fd đó. Trên Btrfs, kernel XOR
     // `root objectid` của subvolume vào `f_fsid`, nên hai subvolume cho hai giá trị
