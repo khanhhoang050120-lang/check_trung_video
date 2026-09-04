@@ -32,15 +32,29 @@ fn ban_voi_khung(khung: &str) -> Ban {
     b
 }
 
-/// Khung giờ **đóng kín**: mọi thời điểm đều ngoài khung.
+/// Khung giờ hẹp tới mức **gần như chắc chắn** mọi thời điểm đều nằm ngoài.
 ///
 /// Đây là cách dựng lại "khung giờ nặng đóng lại giữa lượt presence" một cách đơn
 /// định, không phụ thuộc đồng hồ của runner: `viec::mot_root_presence` hỏi
-/// `trong_khung_nang(cfg, bay_gio())` trong closure `dung` của nó, nên với một
-/// khung độ dài 0 thì lượt quét bị cắt ngay entry đầu tiên — đúng trạng thái mà một
-/// lượt bắt đầu lúc 05:40 rơi vào lúc 06:00.
+/// `trong_khung_nang(cfg, bay_gio())` trong closure `dung` của nó, nên một khung
+/// không chứa `bay_gio()` thì lượt quét bị cắt ngay entry đầu tiên — đúng trạng thái
+/// mà một lượt bắt đầu lúc 05:40 rơi vào lúc 06:00.
+///
+/// **Không dùng được `"00:00-00:00"`**: `parse_window` từ chối khung có hai đầu bằng
+/// nhau vì nó mơ hồ (rỗng hay cả ngày?), và `Config::from_toml` sẽ lỗi ngay — đúng
+/// chỗ test này đã đỏ lần đầu chạy trên CI. Thay bằng một khung dài đúng một phút,
+/// rồi khẳng định tiền đề rằng `bay_gio()` thật sự nằm ngoài nó; xác suất rơi trúng
+/// là 1/1440 và nếu rơi trúng thì test **báo tiền đề sai** chứ không đổ lỗi cho mã
+/// sản phẩm.
+const KHUNG_HEP: &str = "03:17-03:18";
+
 fn ban_khung_dong() -> Ban {
-    ban_voi_khung("00:00-00:00")
+    let b = ban_voi_khung(KHUNG_HEP);
+    assert!(
+        !nasdedup_linux::lich::trong_khung_nang(&b.cfg, daemon::bay_gio()),
+        "tiền đề: {KHUNG_HEP} phải nằm ngoài giờ chạy test (1/1440 khả năng trượt; chạy lại)"
+    );
+    b
 }
 
 #[test]
@@ -132,12 +146,28 @@ fn co_quet_lai_bat_giua_luot_reconcile_thi_khong_bi_nuot() {
     daemon::quet_luc_boot(&d.boot()).expect("initial scan");
     assert!(!khoi_dong::can_quet_lai(&d.b.repo), "tiền đề: cờ đang tắt lúc lượt quét bắt đầu");
 
-    // Watcher bật cờ giữa lượt. Ở đây bật ngay trước lời gọi vì lượt quét chỉ đọc
-    // lại cờ ở cuối; thứ test canh là **phép so ở cuối lượt**, không phải thời điểm.
+    // Nửa một — cờ bật **trước** lượt: nó thuộc đúng thế hệ mà lượt ấy chụp, nên
+    // phục vụ xong thì phải xóa. Không có nửa này thì một bản cài "không bao giờ
+    // xóa" cũng qua được nửa hai, và cờ sẽ kẹt bật vĩnh viễn — reconcile chạy lại
+    // mỗi vòng scheduler.
     khoi_dong::dat_quet_lai(&d.b.repo, true);
     let mut lan_cuoi = LanCuoi::default();
     d.mot_vong(&mut lan_cuoi);
+    assert!(
+        !khoi_dong::can_quet_lai(&d.b.repo),
+        "cờ bật trước lượt reconcile phải được lượt ấy phục vụ rồi xóa"
+    );
 
+    // Nửa hai — cờ bật **giữa** lượt. Không dựng được bằng cách bật cờ rồi gọi
+    // `mot_vong`: `viec::reconcile` chụp thế hệ ở **đầu** lượt (`viec.rs`), nên cờ
+    // bật trước lời gọi nằm trong chính ảnh chụp ấy. Đây đúng là chỗ bản test đầu
+    // tiên sai và bị CI Linux bắt.
+    //
+    // Nên gọi hai nửa theo đúng thứ tự mà `viec::reconcile` gọi, với một lần bật xen
+    // vào giữa — tức dựng lại đúng lát cắt thời gian cần kiểm.
+    let anh_chup = khoi_dong::the_he_quet_lai(&d.b.repo);
+    khoi_dong::dat_quet_lai(&d.b.repo, true);
+    khoi_dong::xoa_quet_lai_neu_khong_doi(&d.b.repo, anh_chup.as_deref());
     assert!(
         khoi_dong::can_quet_lai(&d.b.repo),
         "cờ bật giữa lượt reconcile bị chính lượt ấy xóa mất: tín hiệu 'watcher đã mất sự \
